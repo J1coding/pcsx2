@@ -722,7 +722,7 @@ elseif(LINUX)
 	list(APPEND pcsx2USBHeaders
 		USB/usb-eyetoy/cam-linux.h
 	)
-elseif(APPLE)
+elseif(APPLE AND NOT IOS)
 	list(APPEND pcsx2USBSources
 		USB/usb-eyetoy/cam-macos.mm
 	)
@@ -1258,7 +1258,7 @@ endif()
 target_sources(PCSX2 PRIVATE ${pcsx2USBSources} ${pcsx2USBHeaders})
 
 if(APPLE OR BSD)
-	if(APPLE)
+	if(APPLE AND NOT IOS)
 		target_sources(PCSX2 PRIVATE
 			${pcsx2OSXSources})
 	else()
@@ -1373,7 +1373,8 @@ fixup_file_properties(PCSX2)
 # To ensure the dependency build script's headers are preferred, push any directories that look like */local/include to the end.
 force_include_last(PCSX2_FLAGS "/(usr|local)/include/?$")
 
-if (APPLE)
+if(APPLE AND NOT IOS)
+	# macOS desktop: AppKit + IOKit are available.
 	find_library(APPKIT_LIBRARY AppKit)
 	find_library(IOKIT_LIBRARY IOKit)
 	find_library(METAL_LIBRARY Metal)
@@ -1391,6 +1392,14 @@ if (APPLE)
 	# MetalFX (spatial upscaler) is macOS 13.0+. Weak-link it so the binary still
 	# loads on older systems; every use is guarded with @available(macOS 13, *).
 	target_link_options(PCSX2_FLAGS INTERFACE "SHELL:-weak_framework MetalFX")
+elseif(IOS)
+	# iOS: Metal + QuartzCore (CAMetalLayer) are available; AppKit/IOKit are not.
+	find_library(METAL_LIBRARY Metal)
+	find_library(QUARTZCORE_LIBRARY QuartzCore)
+	target_link_libraries(PCSX2_FLAGS INTERFACE
+		${METAL_LIBRARY}
+		${QUARTZCORE_LIBRARY}
+	)
 endif()
 
 set_property(GLOBAL PROPERTY PCSX2_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})

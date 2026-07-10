@@ -125,5 +125,34 @@ bool PCAPAdapter::recv(NetPacket* p) { return false; }
 bool PCAPAdapter::send(NetPacket* p) { return false; }
 void PCAPAdapter::reloadSettings() {}
 
+#else // TARGET_OS_IPHONE — iOS stubs for CocoaTools (CocoaTools.mm is macOS-only)
+
+// On iOS, CocoaTools.mm is excluded from the build. Provide stubs for the
+// functions referenced by iOS-compiled core code (DynamicLibrary, WindowInfo,
+// Pcsx2Config, etc.). iOS uses UIKit/Foundation, not Cocoa/AppKit.
+#include "common/CocoaTools.h"
+#include "common/WindowInfo.h"
+#include <optional>
+#include <string>
+
+namespace CocoaTools
+{
+	bool CreateMetalLayer(WindowInfo* wi) { return false; }
+	void DestroyMetalLayer(WindowInfo* wi) {}
+	std::optional<float> GetViewRefreshRate(const WindowInfo& wi) { return std::nullopt; }
+	void MarkHelpMenu(void* menu) {}
+	std::optional<std::string> GetBundlePath() { return std::nullopt; }
+	std::optional<std::string> GetNonTranslocatedBundlePath() { return std::nullopt; }
+	std::optional<std::string> MoveToTrash(std::string_view file) { return std::nullopt; }
+	bool DelayedLaunch(std::string_view file) { return false; }
+	bool ShowInFinder(std::string_view file) { return false; }
+	std::optional<std::string> GetResourcePath() { return std::nullopt; }
+	void* CreateWindow(std::string_view title, uint32_t width, uint32_t height) { return nullptr; }
+	void DestroyWindow(void* window) {}
+	void GetWindowInfoFromWindow(WindowInfo* wi, void* window) {}
+	void RunCocoaEventLoop(bool wait_forever) {}
+	void StopMainThreadEventLoop() {}
+}
+
 #endif // !TARGET_OS_IPHONE
 
