@@ -129,10 +129,16 @@ if(APPLE)
 check_include_files(AudioUnit/AudioUnit.h USE_AUDIOUNIT)
 if(USE_AUDIOUNIT)
   target_sources(cubeb PRIVATE
-    src/cubeb_audiounit.cpp
-    src/cubeb_osx_run_loop.cpp)
+    src/cubeb_audiounit.cpp)
+  if(NOT IOS)
+    # cubeb_osx_run_loop.cpp and CoreAudio HAL framework are macOS-only.
+    target_sources(cubeb PRIVATE
+      src/cubeb_osx_run_loop.cpp)
+    target_link_libraries(cubeb PRIVATE "-framework AudioUnit" "-framework CoreAudio" "-framework CoreServices")
+  else()
+    target_link_libraries(cubeb PRIVATE "-framework AudioUnit")
+  endif()
   target_compile_definitions(cubeb PRIVATE USE_AUDIOUNIT)
-  target_link_libraries(cubeb PRIVATE "-framework AudioUnit" "-framework CoreAudio" "-framework CoreServices")
 endif()
 endif()
 
