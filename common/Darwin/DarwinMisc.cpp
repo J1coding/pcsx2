@@ -326,6 +326,30 @@ const CPUInfo& GetCPUInfo()
 	return info;
 }
 
+#if TARGET_OS_IPHONE
+// iOS JIT diagnostics stubs — Phase 3 will add the real W^X/JIT implementation.
+namespace DarwinMisc {
+bool iPSX2_FORCE_EE_INTERP = false;
+int iPSX2_FORCE_JIT_VERIFY = 0;
+int iPSX2_CALL_TGT_X9 = 0;
+int iPSX2_CRASH_PACK = 0;
+int iPSX2_WX_TRACE = 0;
+int iPSX2_CALLPROBE = 0;
+int iPSX2_JIT_HLE = 0;
+int iPSX2_BISECT_COP1_EVERYTHING_ONLY = 0;
+int iPSX2_BISECT_COP1_EVERYTHING_PLUS_LOADSTORE = 0;
+int iPSX2_BISECT_COP1_EVERYTHING_PLUS_MMI = 0;
+int iPSX2_BISECT_COP1_EVERYTHING_PLUS_COP2_VU = 0;
+int iPSX2_BISECT_COP1_EVERYTHING_PLUS_MULTDIV = 0;
+int iPSX2_BISECT_COP1_EVERYTHING_PLUS_SHIFTS = 0;
+int iPSX2_BISECT_COP1_EVERYTHING_PLUS_MOVES = 0;
+int iPSX2_BISECT_COP1_EVERYTHING_PLUS_INTEGER_ALU = 0;
+int iPSX2_BISECT_COP1_EVERYTHING_PLUS_BRANCHES = 0;
+bool IsJITAvailable() { return false; }
+void SetCrashLogFD(int fd) {}
+} // namespace DarwinMisc
+#endif
+
 size_t HostSys::GetRuntimePageSize()
 {
 	return sysctlbyname_T<u32>("hw.pagesize").value_or(0);
