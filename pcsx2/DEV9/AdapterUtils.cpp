@@ -21,7 +21,7 @@
 #include <sys/ioctl.h>
 #include <string.h>
 
-#if defined(__FreeBSD__) || (__APPLE__)
+#if (defined(__FreeBSD__) || (__APPLE__)) && !TARGET_OS_IPHONE
 #include <sys/types.h>
 #include <net/if_dl.h>
 #include <sys/param.h>
