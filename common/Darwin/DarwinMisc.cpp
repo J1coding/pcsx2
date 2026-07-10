@@ -16,6 +16,7 @@
 #include <csignal>
 #include <cstring>
 #include <cstdlib>
+#include <functional>
 #include <optional>
 #include <sys/sysctl.h>
 #include <thread>
@@ -25,8 +26,14 @@
 #include <mach/task.h>
 #include <mach/thread_state.h>
 #include <mutex>
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+// iOS has no ApplicationServices (CGEvent mouse APIs) or IOKit pwr_mgt.
+// Stub these out — iOS uses UIKit GameController, not mouse/screen-saver APIs.
+#else
 #include <ApplicationServices/ApplicationServices.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
+#endif
 
 // Darwin (OSX) is a bit different from Linux when requesting properties of
 // the OS because of its BSD/Mach heritage. Helpfully, most of this code
@@ -136,10 +143,13 @@ std::string GetOSVersionString()
 	return type + " " + release + " " + arch;
 }
 
+#if !TARGET_OS_IPHONE
 static IOPMAssertionID s_pm_assertion;
+#endif
 
 bool Common::InhibitScreensaver(bool inhibit)
 {
+#if !TARGET_OS_IPHONE
 	if (s_pm_assertion)
 	{
 		IOPMAssertionRelease(s_pm_assertion);
@@ -148,10 +158,16 @@ bool Common::InhibitScreensaver(bool inhibit)
 
 	if (inhibit)
 		IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep, kIOPMAssertionLevelOn, CFSTR("Playing a game"), &s_pm_assertion);
-
+#endif
 	return true;
 }
 
+#if TARGET_OS_IPHONE
+// iOS has no mouse cursor — stub these out.
+void Common::SetMousePosition(int x, int y) {}
+bool Common::AttachMousePositionCb(std::function<void(int, int)> cb) { return false; }
+void Common::DetachMousePositionCb() {}
+#else
 void Common::SetMousePosition(int x, int y)
 {
 	// Little bit ugly but;
@@ -214,6 +230,7 @@ void Common::DetachMousePositionCb()
 	mouseRunLoopSource = nullptr;
 	mouseEventTap = nullptr;
 }
+#endif // !TARGET_OS_IPHONE
 
 void Threading::Sleep(int ms)
 {
