@@ -61,7 +61,6 @@ project(ARMSX2iOS VERSION ${ARMSX2_VERSION} LANGUAGES C CXX)
 add_compile_definitions(ARMSX2_VERSION_STR="${ARMSX2_VERSION}")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-	add_compile_definitions(_M_ARM64=1)
 	set(_M_ARM64 TRUE)
 	set(_M_X86 FALSE)
 	set(CMAKE_HOST_SYSTEM_PROCESSOR "arm64")
