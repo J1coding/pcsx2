@@ -27,6 +27,7 @@
 #include <mach/thread_state.h>
 #include <mutex>
 #include <TargetConditionals.h>
+#include <unistd.h>
 #if TARGET_OS_IPHONE
 // iOS has no ApplicationServices (CGEvent mouse APIs) or IOKit pwr_mgt.
 // Stub these out — iOS uses UIKit GameController, not mouse/screen-saver APIs.
@@ -342,14 +343,22 @@ static thread_local int s_code_write_depth = 0;
 void HostSys::BeginCodeWrite()
 {
 	if ((s_code_write_depth++) == 0)
+	{
+#if !TARGET_OS_IPHONE
 		pthread_jit_write_protect_np(0);
+#endif
+	}
 }
 
 void HostSys::EndCodeWrite()
 {
 	pxAssert(s_code_write_depth > 0);
 	if ((--s_code_write_depth) == 0)
+	{
+#if !TARGET_OS_IPHONE
 		pthread_jit_write_protect_np(1);
+#endif
+	}
 }
 
 [[maybe_unused]] static bool IsStoreInstruction(const void* ptr)
