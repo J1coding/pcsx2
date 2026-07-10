@@ -360,6 +360,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 
 	target_include_directories(ARMSX2iOS PRIVATE
 		${CMAKE_SOURCE_DIR}
+		${ARMSX2_ROOT}
 		${ARMSX2_ROOT}/common
 		${ARMSX2_ROOT}/pcsx2
 		${ARMSX2_ROOT}/pcsx2/GS/Renderers/Metal
