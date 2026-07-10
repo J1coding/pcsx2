@@ -49,6 +49,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	set(USE_VULKAN OFF CACHE BOOL "Enable Vulkan renderer" FORCE)
 	set(SDL_OPENGL OFF CACHE BOOL "Enable SDL OpenGL support" FORCE)
 	set(SDL_OPENGLES OFF CACHE BOOL "Enable SDL OpenGL ES support" FORCE)
+	# iOS uses its own SwiftUI frontend, not the desktop Qt GUI or test harnesses.
+	set(ENABLE_QT_UI OFF CACHE BOOL "Enables building the PCSX2 Qt interface." FORCE)
+	set(ENABLE_TESTS OFF CACHE BOOL "Enables building the unit tests" FORCE)
+	set(ENABLE_GSRUNNER OFF CACHE BOOL "Enables building the GSRunner" FORCE)
 endif()
 
 # Project Name
