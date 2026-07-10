@@ -1261,7 +1261,7 @@ if(APPLE OR BSD)
 	if(APPLE AND NOT IOS)
 		target_sources(PCSX2 PRIVATE
 			${pcsx2OSXSources})
-	else()
+	elseif(BSD)
 		target_sources(PCSX2 PRIVATE
 			${pcsx2FreeBSDSources})
 	endif()
