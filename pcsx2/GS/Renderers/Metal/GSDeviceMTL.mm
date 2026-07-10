@@ -1122,7 +1122,9 @@ bool GSDeviceMTL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 
 		// Metal does not support mailbox.
 		m_vsync_mode = (m_vsync_mode == GSVSyncMode::Mailbox) ? GSVSyncMode::FIFO : m_vsync_mode;
+#if !TARGET_OS_IPHONE
 		[m_layer setDisplaySyncEnabled:m_vsync_mode == GSVSyncMode::FIFO];
+#endif
 	}
 	else
 	{
@@ -1588,9 +1590,11 @@ void GSDeviceMTL::EndPresent()
 				if (!frames)
 				{
 					[[MTLCaptureManager sharedCaptureManager] stopCapture];
-					Console.WriteLn("Metal Trace Capture to /tmp/PCSX2MTLCapture.gputrace finished");
-					[[NSWorkspace sharedWorkspace] selectFile:path
-					                 inFileViewerRootedAtPath:@"/tmp/"];
+				Console.WriteLn("Metal Trace Capture to /tmp/PCSX2MTLCapture.gputrace finished");
+#if !TARGET_OS_IPHONE
+				[[NSWorkspace sharedWorkspace] selectFile:path
+				                 inFileViewerRootedAtPath:@"/tmp/"];
+#endif
 				}
 			}
 			else if (s_capture_next)
@@ -1634,7 +1638,9 @@ void GSDeviceMTL::SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
 		return;
 
 	m_vsync_mode = (mode == GSVSyncMode::Mailbox) ? GSVSyncMode::FIFO : mode;
+#if !TARGET_OS_IPHONE
 	[m_layer setDisplaySyncEnabled:m_vsync_mode == GSVSyncMode::FIFO];
+#endif
 }
 
 bool GSDeviceMTL::SetGPUTimingEnabled(bool enabled)
@@ -2226,9 +2232,17 @@ void GSDeviceMTL::MRESetSampler(SamplerSelector sel)
 
 static void textureBarrier(id<MTLRenderCommandEncoder> enc)
 {
+#if TARGET_OS_IPHONE
+#if !TARGET_OS_SIMULATOR
+	[enc memoryBarrierWithScope:MTLBarrierScopeTextures
+	                afterStages:MTLRenderStageFragment
+	               beforeStages:MTLRenderStageFragment];
+#endif
+#else
 	[enc memoryBarrierWithScope:MTLBarrierScopeRenderTargets
 	                afterStages:MTLRenderStageFragment
 	               beforeStages:MTLRenderStageFragment];
+#endif
 }
 
 void GSDeviceMTL::MRESetTexture(GSTexture* tex, int pos)
