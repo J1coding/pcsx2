@@ -162,6 +162,7 @@ void Discord_RegisterSteamGame(const char* applicationId, const char* steamId) {
 
 // --- Host capture + hotkey stubs (frontend callbacks not yet wired) ---
 #include "Host.h"
+#include "GS/GS.h"
 #include "Input/InputManager.h"
 void Host::OnCaptureStarted(const std::string& filename) {}
 void Host::OnCaptureStopped() {}
