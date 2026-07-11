@@ -226,7 +226,15 @@ bool SysMemory::Allocate()
 	vuMemAllocate();
 
 	if (!vtlb_Core_Alloc())
+	{
+		// Clean up already-allocated memory so the destructor doesn't assert
+		// ("No mappings left") on a failed boot path.
+		vuMemRelease();
+		iopMemRelease();
+		memRelease();
+		ReleaseMemoryMap();
 		return false;
+	}
 
 	return true;
 }

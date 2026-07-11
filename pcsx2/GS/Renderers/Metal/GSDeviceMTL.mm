@@ -946,7 +946,9 @@ void GSDeviceMTL::AttachSurfaceOnMainThread()
 	// would never be attached to the view hierarchy.
 	CALayer* view_layer = [m_view layer];
 	if (![view_layer isKindOfClass:[CAMetalLayer class]])
+	{
 		return;
+	}
 
 	m_layer = MRCRetain((CAMetalLayer*)view_layer);
 	[m_layer setDrawableSize:CGSizeMake(m_window_info.surface_width, m_window_info.surface_height)];
@@ -1147,7 +1149,13 @@ bool GSDeviceMTL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	m_features.broken_point_sampler = false;
 	m_features.vs_expand = !GSConfig.DisableVertexShaderExpand;
 	m_features.primitive_id = m_dev.features.primid;
+	// Apple GPUs cannot synchronize fragment writes to fragment reads within a
+	// render pass. Let the GS renderer choose its non-barrier feedback fallback.
+#if TARGET_OS_IPHONE
+	m_features.texture_barrier = false;
+#else
 	m_features.texture_barrier = true;
+#endif
 	m_features.multidraw_fb_copy = false;
 	m_features.provoking_vertex_last = false;
 	m_features.point_expand = true;

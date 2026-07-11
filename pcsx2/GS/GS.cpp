@@ -1051,6 +1051,7 @@ void GSFreeWrappedMemory(void* ptr, size_t size, size_t repeat)
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #include <mach/mach.h>
+#include <mach/vm_map.h>
 #endif
 
 static int s_shm_fd = -1;
@@ -1066,6 +1067,7 @@ void* GSAllocateWrappedMemory(size_t size, size_t repeat)
 	// iOS: shm_open is blocked by the sandbox. Use anonymous mmap + vm_remap
 	// to create the repeated mapping (same physical memory at consecutive VAs).
 	const size_t total_size = size * repeat;
+
 	void* const reserved = mmap(nullptr, total_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (reserved == MAP_FAILED)
 		return nullptr;
@@ -1083,12 +1085,20 @@ void* GSAllocateWrappedMemory(size_t size, size_t repeat)
 		vm_prot_t cur_protection = VM_PROT_READ | VM_PROT_WRITE;
 		vm_prot_t max_protection = VM_PROT_READ | VM_PROT_WRITE;
 		const kern_return_t kr = vm_remap(
-			mach_task_self(), &target_address, static_cast<vm_size_t>(size),
-			0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
-			mach_task_self(), reinterpret_cast<vm_address_t>(reserved), false,
-			&cur_protection, &max_protection, VM_INHERIT_NONE);
-		const vm_address_t expected = reinterpret_cast<vm_address_t>(static_cast<u8*>(reserved) + (size * i));
-		if (kr != KERN_SUCCESS || target_address != expected)
+			mach_task_self(),
+			&target_address,
+			static_cast<vm_size_t>(size),
+			0,
+			VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
+			mach_task_self(),
+			reinterpret_cast<vm_address_t>(reserved),
+			false,
+			&cur_protection,
+			&max_protection,
+			VM_INHERIT_NONE);
+		const vm_address_t expected_address =
+			reinterpret_cast<vm_address_t>(static_cast<u8*>(reserved) + (size * i));
+		if (kr != KERN_SUCCESS || target_address != expected_address)
 		{
 			munmap(reserved, total_size);
 			return nullptr;
