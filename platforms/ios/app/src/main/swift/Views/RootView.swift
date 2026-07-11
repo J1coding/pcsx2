@@ -79,9 +79,11 @@ struct MenuTabView: View {
         .tint(.blue)
 #else
         TabView(selection: $selectedTab) {
-            SafeAreaProtectedMenuTabContent {
-                GameListView()
-            }
+            // Games tab is NOT wrapped in SafeAreaProtectedMenuTabContent — it
+            // renders its own edge-to-edge custom wallpaper (BackgroundContainerView)
+            // inside its NavigationStack ZStack, which must not be clipped by the
+            // safe-area padding that the other tabs use.
+            GameListView()
                 .tabItem {
                     Label(settings.localized("Games"), systemImage: "gamecontroller")
                 }
