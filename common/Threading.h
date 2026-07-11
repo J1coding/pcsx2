@@ -76,11 +76,8 @@ namespace Threading
 		bool SetAffinity(u64 processor_mask) const;
 
 		/// Sets the nice priority for a thread. Returns false if unsupported/failed.
-		bool SetNicePriority(int nice) const;
-
-		/// Nudges the thread's scheduling priority (nice value on POSIX).
 		/// Negative = higher priority. Silently no-ops on platforms without
-		/// per-thread priority support. Returns true on success.
+		/// per-thread priority support.
 		bool SetNicePriority(int nice) const;
 
 		/// Diagnostic: current CPU-affinity mask (cores this thread may run on),

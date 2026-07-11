@@ -348,11 +348,6 @@ namespace VMManager
 		/// worker threads are being scheduled onto slow cores / clamped by a cpuset.
 		std::string GetThreadPlacementDebug();
 
-		/// Diagnostic (OSD): where the EE/VU/GS threads are actually running (current core +
-		/// affinity mask) plus the cpuinfo cluster/frequency topology. Used to see whether the
-		/// worker threads are being scheduled onto slow cores / clamped by a cpuset.
-		std::string GetThreadPlacementDebug();
-
 		const std::string& GetELFOverride();
 		bool IsExecutionInterrupted();
 		void ELFLoadingOnCPUThread(std::string elf_path);
