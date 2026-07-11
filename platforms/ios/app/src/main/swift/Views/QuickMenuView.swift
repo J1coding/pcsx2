@@ -281,7 +281,7 @@ private struct LandscapeCommandBar: View {
                         .font(.caption)
                         .foregroundStyle(OverlayTheme.textSecondary)
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                        .truncationMode(.tail)
                         .layoutPriority(-1)
                 }
                 Spacer(minLength: 8)

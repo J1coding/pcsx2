@@ -225,7 +225,7 @@ struct GameScreenView: View {
                     // Game respects the top safe area so OSD stays below the Dynamic Island.
                     // Controller ignores the bottom safe area so buttons remain usable near the home indicator.
                     VStack(spacing: 0) {
-                        let gameHeight = min(geo.size.width * 3 / 4, geo.size.height * 0.55)
+                        let gameHeight = min(geo.size.width * 3 / 4, geo.size.height * 0.6)
                         MetalGameView()
                             .frame(height: gameHeight)
                             .clipped()
@@ -252,7 +252,7 @@ struct GameScreenView: View {
                     .overlay(alignment: .topTrailing) {
                         if !menuButtonHidden {
                             menuButton()
-                                .padding(.top, 4)
+                                .padding(.top, 8)
                                 .padding(.trailing, 4)
                         }
                     }
@@ -443,13 +443,13 @@ struct GameScreenView: View {
         // invisible at 30pt over gameplay. Using a template SF Symbol with a strong
         // white foreground guarantees the icon is readable on both dark and bright
         // gameplay regardless of any bundled asset, so the button is never iconless.
-        Image(systemName: "ellipsis.circle.fill")
+        Image(systemName: "pause.circle.fill")
             .font(.system(size: 22, weight: .semibold))
             .symbolRenderingMode(.hierarchical)
             .foregroundStyle(.white)
             .frame(width: 30, height: 30)
             .padding(7)
-            .background(.black.opacity(0.28), in: Circle())
+            .background(.black.opacity(0.40), in: Circle())
     }
 
     private var controllerSkinMenu: some View {

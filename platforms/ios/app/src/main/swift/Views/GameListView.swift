@@ -363,7 +363,7 @@ struct GameListView: View {
                                 appState.bootBIOSOnly()
                             }
                         }
-                        .font(.caption)
+                        .font(.callout)
                     }
                 }
             }
@@ -778,6 +778,8 @@ struct GameListView: View {
 				} label: {
 					Image(systemName: game.isFavorite ? "star.fill" : "star")
 						.foregroundStyle(game.isFavorite ? .yellow : .gray)
+						.frame(width: 44, height: 44)
+						.contentShape(Rectangle())
 				}
 				.buttonStyle(.plain)
 				.accessibilityLabel(game.isFavorite ? settings.localized("Remove from favorites") : settings.localized("Add to favorites"))
@@ -798,7 +800,7 @@ struct GameListView: View {
         Button {
             open(game)
         } label: {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .center, spacing: 10) {
                 ZStack(alignment: .topTrailing) {
                     coverThumbnail(for: game, width: 126, height: 189)
                         .frame(maxWidth: .infinity)
@@ -809,22 +811,22 @@ struct GameListView: View {
 						Image(systemName: game.isFavorite ? "star.fill" : "star")
                             .font(.callout.weight(.semibold))
                             .foregroundStyle(game.isFavorite ? .yellow : .white.opacity(0.86))
-                            .padding(8)
-                            .background(.black.opacity(0.48), in: Circle())
+                            .padding(6)
+                            .background(.black.opacity(0.36), in: Circle())
                     }
                     .buttonStyle(.plain)
                     .padding(6)
                     .accessibilityLabel(game.isFavorite ? settings.localized("Remove from favorites") : settings.localized("Add to favorites"))
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .center, spacing: 4) {
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
                         Text(coverStore.displayName(forGameName: game.name))
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity, alignment: .center)
                         if isRunning(game) {
                             Image(systemName: "circle.fill")
                                 .font(.system(size: 7))
@@ -850,10 +852,11 @@ struct GameListView: View {
                     }
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
-            .padding(8)
+            .padding(12)
             .frame(maxWidth: .infinity, minHeight: 268, alignment: .top)
             .background(cardMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 				.overlay {

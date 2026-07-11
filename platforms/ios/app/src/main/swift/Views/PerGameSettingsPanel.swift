@@ -744,9 +744,9 @@ struct PerGameSettingsPanel: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if !hasGameSettingsIdentity {
-                Text("Start this game once before saving its settings.")
+                Text(settings.localized("Start this game once before saving its settings."))
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(OverlayTheme.warm)
             }
             Button(role: .destructive) {
                 showResetAllConfirmation = true

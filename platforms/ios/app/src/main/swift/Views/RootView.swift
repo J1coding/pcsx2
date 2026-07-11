@@ -116,8 +116,22 @@ struct MenuTabView: View {
             .tag(3)
         }
         .tint(.blue)
-        .toolbarBackground(.visible, for: .tabBar)
+        .modifier(PreventTabBarCollapseModifier())
 #endif
+    }
+}
+
+/// Forces the tab bar to keep its standard (expanded) appearance on iOS < 26,
+/// where the floating tab bar can collapse to a single pill when opaque content
+/// extends underneath it. On iOS 26+ the Liquid Glass tab bar handles this
+/// automatically, so no override is needed.
+private struct PreventTabBarCollapseModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content
+        } else {
+            content.toolbarBackground(.visible, for: .tabBar)
+        }
     }
 }
 
