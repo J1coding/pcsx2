@@ -116,6 +116,7 @@ struct MenuTabView: View {
             .tag(3)
         }
         .tint(.blue)
+        .toolbarBackground(.visible, for: .tabBar)
 #endif
     }
 }

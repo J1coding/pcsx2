@@ -271,6 +271,8 @@ struct GameListView: View {
                 }
             }
 			.navigationTitle(settings.localized("Games"))
+			.navigationBarTitleDisplayMode(.inline)
+			.toolbarBackground(hasCustomBackground ? .hidden : .automatic, for: .navigationBar)
 				.toolbar {
 					ToolbarItem(placement: .topBarTrailing) {
 						Button {
@@ -529,7 +531,7 @@ struct GameListView: View {
                 PerGameSettingsPanel(game: game)
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
-                    .presentationBackground(.regularMaterial)
+                    .presentationBackground(.clear)
                     .presentationCornerRadius(34)
             }
             .sheet(item: $discLinkTarget) { game in

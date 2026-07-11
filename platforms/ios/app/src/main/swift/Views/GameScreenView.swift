@@ -274,7 +274,7 @@ struct GameScreenView: View {
         }
         .sheet(isPresented: childPresentedBinding(.speed)) {
             SpeedControlPanel(settings: settings)
-                .presentationDetents([.medium])
+                .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: childPresentedBinding(.retroAchievements)) {
             RetroAchievementsGamePanel(settings: settings)
