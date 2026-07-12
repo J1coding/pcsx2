@@ -37,6 +37,7 @@
 #include "pcsx2/vtlb.h"               // vtlb_FastmemAreaUnavailable
 #include "pcsx2/SIO/Memcard/MemoryCardFile.h"
 #include "pcsx2/ImGui/ImGuiManager.h"
+#include "IconsFontAwesome.h"
 
 #include "common/Darwin/DarwinMisc.h"
 
@@ -602,23 +603,46 @@
 - (void)checkJITAndStartVM {
 #if !TARGET_OS_SIMULATOR
     ARMSX2ApplyJITScriptProtocol("jit-gate");
-    if (DarwinMisc::IsJITAvailable()) {
+
+    // Re-validate JIT even if it was available at launch. iOS can revoke
+    // CS_DEBUGGED after ~30-60s of inactivity.
+    const bool jitAlive = DarwinMisc::IsJITAvailable() && DarwinMisc::ValidateJITAlive();
+
+    if (jitAlive) {
         std::fprintf(stderr, "@@BOOT_JIT_GATE@@ available=1 mode=jit_alloc\n");
         std::fflush(stderr);
         Console.WriteLn("@@JIT_GATE@@ JIT channel available; starting VM");
+        DarwinMisc::iPSX2_FORCE_EE_INTERP = 0;
+        // Restore recompiler settings if we previously forced interpreter.
+        // EnableFastmem is intentionally left to the pre-VM-sync logic, which
+        // re-applies the sticky fastmem-area-unavailable disable.
+        s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableEE", true);
+        s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableIOP", true);
+        s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU0", true);
+        s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", true);
+        s_settings_interface->Save();
         [self startVMThread];
         return;
     }
 
-    std::fprintf(stderr, "@@BOOT_JIT_GATE@@ available=0 mode=blocked reason=no_debug_jit_channel\n");
+    // JIT is dead. Fall back to interpreter instead of blocking boot.
+    std::fprintf(stderr, "@@BOOT_JIT_GATE@@ available=0 fallback=interpreter\n");
     std::fflush(stderr);
-    Console.Error("@@JIT_GATE@@ No debug/JIT channel; VM boot blocked because this build requires JIT.");
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (s_rootVC)
-            s_rootVC.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSReturnToMenu" object:nil];
-    });
-    Host::ReportErrorAsync("JIT Unavailable", "Launch through the debugger/JIT enabler so iOS marks this process as debugged.");
+
+    DarwinMisc::iPSX2_FORCE_EE_INTERP = 1;
+    s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableEE", false);
+    s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableIOP", false);
+    s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU0", false);
+    s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", false);
+    s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableFastmem", false);
+    s_settings_interface->Save();
+
+    Host::AddIconOSDMessage("JITExpired", ICON_FA_TRIANGLE_EXCLAMATION,
+        "JIT session expired — booting in interpreter mode (much slower). "
+        "Relaunch the app to re-enable JIT.",
+        15.0f);
+
+    [self startVMThread];
 #else
     [self startVMThread];
 #endif
