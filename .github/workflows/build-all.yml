@@ -12,16 +12,29 @@
 # NOTE: The Android and iOS jobs build against the freshly-collapsed single core
 # and have not yet had a green run; they are the mechanism that will surface the
 # remaining reconciliation work. Keep them non-blocking until they first pass.
+#
+# INVARIANT (do not weaken): the PC arm64 jobs (pc-macos-arm64 / pc-linux-arm64 /
+# pc-windows-arm64) are BLOCKING and must stay so. They are the guardrail that a
+# mobile-motivated change has not silently altered the shared canonical core.
+# Anything mobile-specific belongs behind a platform guard (#if __ANDROID__ /
+# ARMSX2_IOS) or in a forked, CMake-selected translation unit (see the aR5900*
+# EE fork in pcsx2/CMakeLists.txt) -- never grafted unguarded into shared files.
 name: Build All Platforms
 
 on:
   push:
     branches:
-      - main
       - master
-      - macOS
-      - refactor/monorepo
+    # Doc-only pushes shouldn't burn ~2h of arm64 CI.
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE*'
+      - '.gitignore'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE*'
+      - '.gitignore'
   workflow_dispatch:
 
 concurrency:
@@ -79,7 +92,7 @@ jobs:
       run:
         working-directory: platforms/android
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -92,8 +105,12 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install NDK
-        run: yes | sdkmanager "ndk;27.2.12479018" "cmake;3.22.1" >/dev/null || true
+      # NDK matches the version AGP resolves to (build.gradle.kts pins none, so it
+      # uses AGP's default 28.2.13676358); cmake 3.31.6 matches the pin in
+      # build.gradle.kts. 3.22.1 (AGP's default) is the shaderc deps' exact
+      # cmake_minimum_required floor and fails to configure spirv-tools.
+      - name: Install NDK + CMake
+        run: yes | sdkmanager "ndk;28.2.13676358" "cmake;3.31.6" >/dev/null || true
 
       # shaderc's SPIRV-Tools/glslang/etc. are fetched on demand (not vendored,
       # not submodules), so `submodules: recursive` above does not provide them.
@@ -104,7 +121,7 @@ jobs:
         run: ./gradlew :app:assembleRelease --stacktrace
 
       - name: Upload APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: armsx2-android-arm64
           path: platforms/android/app/build/outputs/apk/**/*.apk
@@ -112,35 +129,86 @@ jobs:
 
   # ---- iOS .app ----------------------------------------------------------
   ios:
-    name: iOS (arm64, unsigned)
+    name: iOS (arm64, unsigned device IPA)
     runs-on: macos-26
     # Non-blocking until the collapsed-core iOS build first goes green.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
       - name: Select Xcode
         run: sudo xcode-select -switch /Applications/Xcode.app
 
-      - name: Configure (CMake, Xcode generator, simulator SDK, no signing)
+      - name: Configure (CMake, Xcode generator, real device SDK, no signing)
         working-directory: platforms/ios/app/src/main/cpp
         run: >
           cmake -G Xcode -B build
           -DCMAKE_SYSTEM_NAME=iOS
           -DCMAKE_OSX_ARCHITECTURES=arm64
-          -DARMSX2_REAL_DEVICE=OFF
+          -DARMSX2_REAL_DEVICE=ON
 
-      - name: Build
+      - name: Build (iphoneos SDK, unsigned)
         working-directory: platforms/ios/app/src/main/cpp
         run: >
           cmake --build build --config Release
-          -- -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO
+          -- -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 
-      - name: Upload .app
+      - name: Package unsigned .ipa
+        working-directory: platforms/ios/app/src/main/cpp
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
+          IPA_NAME="ARMSX2-iOS-${SHORT_SHA}.ipa"
+
+          APP_PATH=$(find build -name "ARMSX2iOS.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: ARMSX2iOS.app not found in build output"
+            exit 1
+          fi
+
+          echo "Found app at: $APP_PATH"
+          echo "Packaging as: $IPA_NAME"
+
+          STAGING=$(mktemp -d)
+          mkdir -p "$STAGING/Payload"
+          cp -R "$APP_PATH" "$STAGING/Payload/"
+
+          cd "$STAGING"
+          zip -r "$GITHUB_WORKSPACE/$IPA_NAME" Payload -x "*.DS_Store"
+          cd "$GITHUB_WORKSPACE"
+
+          echo "IPA_NAME=$IPA_NAME" >> $GITHUB_ENV
+          ls -lh "$IPA_NAME"
+
+      - name: Upload .ipa
         uses: actions/upload-artifact@v4
         with:
-          name: armsx2-ios-arm64
-          path: platforms/ios/app/src/main/cpp/build/**/*.app
-          if-no-files-found: warn
+          name: ${{ env.IPA_NAME }}
+          path: ${{ github.workspace }}/${{ env.IPA_NAME }}
+          if-no-files-found: error
+
+  # ---- Alert on a broken master build ------------------------------------
+  # Fires only when a BLOCKING guardrail job (the PC arm64 builds) fails on a
+  # push to master -- never on PRs, and never on the non-blocking mobile jobs
+  # (they are continue-on-error, so they can't trip `failure()`). GitHub also
+  # emails the pusher natively; this adds a Discord ping to the shared channel.
+  notify-failure:
+    name: Notify on master build failure
+    needs: [pc-macos-arm64, pc-linux-arm64, pc-windows-arm64]
+    if: ${{ failure() && github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    # Job-level so the step's `if: env.HOOK != ''` guard can see it.
+    env:
+      HOOK: ${{ secrets.DISCORD_BUILD_WEBHOOK }}
+    steps:
+      - name: Discord failure ping
+        if: ${{ env.HOOK != '' }}   # no-op on forks that lack the secret
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          jq -n \
+            --arg url "$RUN_URL" \
+            --arg desc "Commit \`${{ github.sha }}\` by ${{ github.actor }} failed a required build." \
+            '{username:"ARMSX2 CI", embeds:[{title:"❌ master build broke", url:$url, color:15158332, description:$desc}]}' \
+          | curl -fsSL -H 'Content-Type: application/json' -d @- "$HOOK"

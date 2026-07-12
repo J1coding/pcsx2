@@ -18,8 +18,6 @@
 
 #include <cstddef>
 
-
-
 namespace a64 = vixl::aarch64;
 
 // Scratch register for arithmetic ops (caller-saved, not used by any helper).
@@ -771,5 +769,3 @@ void armEmitMTLO(u32 rs)
 	armAsm->Ldr(RSCRATCH, a64::MemOperand(RESTATEPTR, EE_GPR_OFFSET(rs)));
 	armAsm->Str(RSCRATCH, a64::MemOperand(RESTATEPTR, EE_LO_OFFSET()));
 }
-
-

@@ -77,7 +77,7 @@ namespace Threading
 
 		/// Nudges the thread's scheduling priority (nice value on POSIX).
 		/// Negative = higher priority. Silently no-ops on platforms without
-		/// per-thread priority support. Returns true on success.
+		/// per-thread priority support.
 		bool SetNicePriority(int nice) const;
 
 		/// Diagnostic: current CPU-affinity mask (cores this thread may run on),

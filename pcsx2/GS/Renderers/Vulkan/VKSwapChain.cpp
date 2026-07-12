@@ -22,6 +22,10 @@
 #include <android/native_window.h>
 #endif
 
+#if defined(VK_USE_PLATFORM_ANDROID_KHR)
+#include <android/native_window.h>
+#endif
+
 static_assert(VKSwapChain::NUM_SEMAPHORES == (GSDeviceVK::NUM_COMMAND_BUFFERS + 1));
 
 VKSwapChain::VKSwapChain(const WindowInfo& wi, VkSurfaceKHR surface, VkPresentModeKHR present_mode,

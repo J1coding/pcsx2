@@ -323,7 +323,7 @@ set(pcsx2DEV9Sources
 # stub PCAPAdapter) instead, so the real pcap_io.cpp must NOT be compiled there
 # (it references pcap_findalldevs/pcap_open_live/... -> undefined at link, which
 # LTO release builds surface even though a debug build's --gc-sections hides it).
-if(NOT ANDROID)
+if(NOT ANDROID AND NOT IOS)
 	list(APPEND pcsx2DEV9Sources DEV9/pcap_io.cpp)
 endif()
 
@@ -722,7 +722,7 @@ elseif(LINUX)
 	list(APPEND pcsx2USBHeaders
 		USB/usb-eyetoy/cam-linux.h
 	)
-elseif(APPLE)
+elseif(APPLE AND NOT IOS)
 	list(APPEND pcsx2USBSources
 		USB/usb-eyetoy/cam-macos.mm
 	)
@@ -1060,12 +1060,14 @@ set(pcsx2x86Headers
 	)
 
 # ARM64
-set(pcsx2arm64Sources
-	arm64/AsmHelpers.cpp
-	arm64/Vif_Dynarec.cpp
-	arm64/Vif_UnpackNEON.cpp
-	arm64/RecStubs.cpp
-	arm64/aR3000A.cpp
+#
+# EE recompiler (aR5900*): a SINGLE canonical Phase-7 backend for every arm64 target
+# (PC macOS/Linux/Windows + Android). The Android mac-port graft fork was dropped after a
+# device A/B (canonical EE+VU + force-float, PGO tuned for the mac-port so rigged against
+# canonical) showed canonical EE at refresh parity on Android — GoW2 combat EE ~12.8ms,
+# 100% speed / 60fps. The real Android perf lever is the force-float in
+# VMManager::SetEmuThreadAffinities, not the recompiler backend. See REFACTOR_STATUS.md.
+set(pcsx2arm64EESources
 	arm64/aR5900.cpp
 	arm64/aR5900Analysis.cpp
 	arm64/aR5900LoadStore.cpp
@@ -1074,6 +1076,15 @@ set(pcsx2arm64Sources
 	arm64/aR5900Branch.cpp
 	arm64/aR5900FPU.cpp
 	arm64/aR5900MMI.cpp
+	)
+
+set(pcsx2arm64Sources
+	arm64/AsmHelpers.cpp
+	arm64/Vif_Dynarec.cpp
+	arm64/Vif_UnpackNEON.cpp
+	arm64/RecStubs.cpp
+	arm64/aR3000A.cpp
+	${pcsx2arm64EESources}
 	arm64/aVU.cpp
 	)
 
@@ -1235,10 +1246,10 @@ endif()
 target_sources(PCSX2 PRIVATE ${pcsx2USBSources} ${pcsx2USBHeaders})
 
 if(APPLE OR BSD)
-	if(APPLE)
+	if(APPLE AND NOT IOS)
 		target_sources(PCSX2 PRIVATE
 			${pcsx2OSXSources})
-	else()
+	elseif(BSD)
 		target_sources(PCSX2 PRIVATE
 			${pcsx2FreeBSDSources})
 	endif()
@@ -1297,7 +1308,7 @@ if(WIN32)
 		dwmapi.lib
 		OneCore.lib
 	)
-elseif(NOT ANDROID)
+elseif(NOT ANDROID AND NOT IOS)
 	# Android has no system libpcap; DEV9 uses Android/AndroidPcapStubs.cpp instead,
 	# so it must NOT link PCAP::PCAP (a bare else() here caught Android and broke it).
 	target_link_libraries(PCSX2_FLAGS INTERFACE
@@ -1350,7 +1361,8 @@ fixup_file_properties(PCSX2)
 # To ensure the dependency build script's headers are preferred, push any directories that look like */local/include to the end.
 force_include_last(PCSX2_FLAGS "/(usr|local)/include/?$")
 
-if (APPLE)
+if(APPLE AND NOT IOS)
+	# macOS desktop: AppKit + IOKit are available.
 	find_library(APPKIT_LIBRARY AppKit)
 	find_library(IOKIT_LIBRARY IOKit)
 	find_library(METAL_LIBRARY Metal)
@@ -1367,6 +1379,17 @@ if (APPLE)
 	)
 	# MetalFX (spatial upscaler) is macOS 13.0+. Weak-link it so the binary still
 	# loads on older systems; every use is guarded with @available(macOS 13, *).
+	target_link_options(PCSX2_FLAGS INTERFACE "SHELL:-weak_framework MetalFX")
+elseif(IOS)
+	# iOS: Metal + QuartzCore (CAMetalLayer) are available; AppKit/IOKit are not.
+	find_library(METAL_LIBRARY Metal)
+	find_library(QUARTZCORE_LIBRARY QuartzCore)
+	target_link_libraries(PCSX2_FLAGS INTERFACE
+		${METAL_LIBRARY}
+		${QUARTZCORE_LIBRARY}
+	)
+	# MetalFX spatial upscaler is iOS 16+. Weak-link it so the binary still loads
+	# on older iOS revisions; every use is guarded by @available(iOS 16, *).
 	target_link_options(PCSX2_FLAGS INTERFACE "SHELL:-weak_framework MetalFX")
 endif()
 

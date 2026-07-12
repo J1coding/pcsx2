@@ -135,13 +135,18 @@ EGLNativeWindowType GLContextEGL::GetNativeWindow(EGLConfig config)
 
 bool GLContextEGL::SetDisplay()
 {
+#if defined(__ANDROID__)
+	// Android has no Mesa platform-display path, so bind the default display up front.
+	// On desktop this is a no-op so GetPlatformDisplay() below stays authoritative and
+	// the canonical Initialize() path (no eglGetDisplay pre-step, no extra abort gate)
+	// is preserved byte-for-byte.
 	m_display = eglGetDisplay(static_cast<EGLNativeDisplayType>(m_wi.display_connection));
 	if (!m_display)
 	{
 		Console.Error("eglGetDisplay() failed: %d", eglGetError());
 		return false;
 	}
-
+#endif
 	return true;
 }
 
@@ -546,6 +551,21 @@ bool GLContextEGL::CreateContext(const Version& version, EGLContext share_contex
 	}
 
 	Console.WriteLn("eglCreateContext() succeeded for version %u.%u", version.major_version, version.minor_version);
+
+	// Restore the canonical negative-swap-interval (tear-control) capability probe; the
+	// Android GLES port had dropped it, silently forcing SupportsNegativeSwapInterval()
+	// false on desktop EGL. eglGetConfigAttrib works on all platforms, so no guard needed.
+	EGLint min_swap_interval, max_swap_interval;
+	m_supports_negative_swap_interval = false;
+	if (eglGetConfigAttrib(m_display, config.value(), EGL_MIN_SWAP_INTERVAL, &min_swap_interval) &&
+		eglGetConfigAttrib(m_display, config.value(), EGL_MAX_SWAP_INTERVAL, &max_swap_interval))
+	{
+		DEV_LOG("EGL_MIN_SWAP_INTERVAL = {}", min_swap_interval);
+		DEV_LOG("EGL_MAX_SWAP_INTERVAL = {}", max_swap_interval);
+		m_supports_negative_swap_interval = (min_swap_interval <= -1);
+	}
+
+	INFO_LOG("Negative swap interval/tear-control is {}supported", m_supports_negative_swap_interval ? "" : "NOT ");
 
 	m_config = config.value();
 	m_version = version;

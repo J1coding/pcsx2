@@ -10,6 +10,7 @@ enum OsdPreset: Int, CaseIterable {
     case simple = 1    // FPS + speed + CPU usage + device stats
     case detail = 2    // All except frame times graph
     case full = 3      // Everything
+    case custom = 4    // User-defined toggle set (not derived from a preset table)
 
     var label: String {
         switch self {
@@ -17,6 +18,7 @@ enum OsdPreset: Int, CaseIterable {
         case .simple: return "Simple"
         case .detail: return "Detail"
         case .full: return "Full"
+        case .custom: return "Custom"
         }
     }
 }
@@ -67,6 +69,12 @@ struct GameFixOption: Identifiable, Hashable {
     var id: String { key }
 }
 
+/// Which analog stick an axis-inversion setting applies to.
+enum StickSide: String, CaseIterable, Identifiable {
+    case left, right
+    var id: String { rawValue }
+}
+
 @MainActor
 @Observable
 final class SettingsStore {
@@ -85,6 +93,8 @@ final class SettingsStore {
     /// Manual EmuCore/Gamefixes toggles — see SettingsStore+GameFixes.swift.
 
     @ObservationIgnored private var suppressINIWrites = false
+    @ObservationIgnored private var isProgrammaticOsdFlagChange = false
+    @ObservationIgnored private var isAutoMarkingCustom = false
     @ObservationIgnored private var frameLimiterDisabledForFastForward = false
     @ObservationIgnored private var graphicsApplyWorkItem: DispatchWorkItem?
     @ObservationIgnored private var visualSliderDragCount = 0
@@ -458,6 +468,13 @@ final class SettingsStore {
     }
 
     // ── Graphics ──
+
+    /// MetalFX Spatial upscaling requires iOS 16+ and a device GPU that supports it.
+    /// Probes at runtime so the UI can hide the option on unsupported hardware.
+    var isMetalFXAvailable: Bool {
+        ARMSX2Bridge.isMetalFXSupported()
+    }
+
     let _rendererConfig = Setting<Int>(
         section: "EmuCore/GS", key: "Renderer", default: 17,
         suppressible: false,
@@ -868,6 +885,18 @@ final class SettingsStore {
         _tvShaderConfig.writer(_tvShaderConfig.section, _tvShaderConfig.key, tvShader)
         _tvShaderConfig.onSet?(tvShader)
     }}
+    // MetalFX Spatial upscaler (0 = Off / bilinear, 1 = MetalFX Spatial).
+    // Hidden in the UI when isMetalFXAvailable is false; default is Off.
+    let _upscalerConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "Upscaler", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) },
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var upscaler: Int = 0 { didSet {
+        guard !(_upscalerConfig.suppressible && suppressINIWrites) else { return }
+        _upscalerConfig.writer(_upscalerConfig.section, _upscalerConfig.key, upscaler)
+        _upscalerConfig.onSet?(upscaler)
+    }}
 
     /// Homogeneous bool GS hacks — see SettingsStore+Graphics.swift for the option list.
     var gsBoolHacks: [String: Bool] = [:]
@@ -1016,6 +1045,10 @@ final class SettingsStore {
     // ── OSD Overlay ──
     var osdPreset: OsdPreset {
         didSet {
+            // Only an explicit user change should cascade the preset into the
+            // individual OSD flags. During a bulk reload (suppressINIWrites), skip
+            // so applyOsdPreset() can't overwrite the user OSD settings.
+            guard !suppressINIWrites else { return }
             ARMSX2Bridge.setINIInt("ARMSX2iOS/UI", key: "OsdPreset", value: Int32(osdPreset.rawValue))
             if osdPreset == .off {
                 if oldValue != .off {
@@ -1024,7 +1057,13 @@ final class SettingsStore {
             } else {
                 lastActiveOsdPreset = osdPreset
             }
-            applyOsdPreset(osdPreset)
+            if osdPreset == .custom {
+                if !isAutoMarkingCustom {
+                    restoreCustomOsd()
+                }
+            } else {
+                applyOsdPreset(osdPreset)
+            }
         }
     }
     let _lastActiveOsdPresetConfig = Setting<OsdPreset>(
@@ -1065,6 +1104,7 @@ final class SettingsStore {
         guard !(_osdShowFPSConfig.suppressible && suppressINIWrites) else { return }
         _osdShowFPSConfig.writer(_osdShowFPSConfig.section, _osdShowFPSConfig.key, osdShowFPS)
         _osdShowFPSConfig.onSet?(osdShowFPS)
+        markOsdCustom()
     }}
     let _osdShowVPSConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "OsdShowVPS", default: false,
@@ -1074,6 +1114,7 @@ final class SettingsStore {
         guard !(_osdShowVPSConfig.suppressible && suppressINIWrites) else { return }
         _osdShowVPSConfig.writer(_osdShowVPSConfig.section, _osdShowVPSConfig.key, osdShowVPS)
         _osdShowVPSConfig.onSet?(osdShowVPS)
+        markOsdCustom()
     }}
     let _osdShowSpeedConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "OsdShowSpeed", default: false,
@@ -1083,6 +1124,7 @@ final class SettingsStore {
         guard !(_osdShowSpeedConfig.suppressible && suppressINIWrites) else { return }
         _osdShowSpeedConfig.writer(_osdShowSpeedConfig.section, _osdShowSpeedConfig.key, osdShowSpeed)
         _osdShowSpeedConfig.onSet?(osdShowSpeed)
+        markOsdCustom()
     }}
     let _osdShowCPUConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "OsdShowCPU", default: false,
@@ -1092,6 +1134,7 @@ final class SettingsStore {
         guard !(_osdShowCPUConfig.suppressible && suppressINIWrites) else { return }
         _osdShowCPUConfig.writer(_osdShowCPUConfig.section, _osdShowCPUConfig.key, osdShowCPU)
         _osdShowCPUConfig.onSet?(osdShowCPU)
+        markOsdCustom()
     }}
     let _osdShowGPUConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "OsdShowGPU", default: false,
@@ -1101,6 +1144,7 @@ final class SettingsStore {
         guard !(_osdShowGPUConfig.suppressible && suppressINIWrites) else { return }
         _osdShowGPUConfig.writer(_osdShowGPUConfig.section, _osdShowGPUConfig.key, osdShowGPU)
         _osdShowGPUConfig.onSet?(osdShowGPU)
+        markOsdCustom()
     }}
     let _osdShowResolutionConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "OsdShowResolution", default: false,
@@ -1110,6 +1154,7 @@ final class SettingsStore {
         guard !(_osdShowResolutionConfig.suppressible && suppressINIWrites) else { return }
         _osdShowResolutionConfig.writer(_osdShowResolutionConfig.section, _osdShowResolutionConfig.key, osdShowResolution)
         _osdShowResolutionConfig.onSet?(osdShowResolution)
+        markOsdCustom()
     }}
     let _osdShowGSStatsConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "OsdShowGSStats", default: false,
@@ -1119,6 +1164,7 @@ final class SettingsStore {
         guard !(_osdShowGSStatsConfig.suppressible && suppressINIWrites) else { return }
         _osdShowGSStatsConfig.writer(_osdShowGSStatsConfig.section, _osdShowGSStatsConfig.key, osdShowGSStats)
         _osdShowGSStatsConfig.onSet?(osdShowGSStats)
+        markOsdCustom()
     }}
     let _osdShowIndicatorsConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "OsdShowIndicators", default: false,
@@ -1128,6 +1174,7 @@ final class SettingsStore {
         guard !(_osdShowIndicatorsConfig.suppressible && suppressINIWrites) else { return }
         _osdShowIndicatorsConfig.writer(_osdShowIndicatorsConfig.section, _osdShowIndicatorsConfig.key, osdShowIndicators)
         _osdShowIndicatorsConfig.onSet?(osdShowIndicators)
+        markOsdCustom()
     }}
     let _osdShowSettingsConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "OsdShowSettings", default: false,
@@ -1137,6 +1184,7 @@ final class SettingsStore {
         guard !(_osdShowSettingsConfig.suppressible && suppressINIWrites) else { return }
         _osdShowSettingsConfig.writer(_osdShowSettingsConfig.section, _osdShowSettingsConfig.key, osdShowSettings)
         _osdShowSettingsConfig.onSet?(osdShowSettings)
+        markOsdCustom()
     }}
     let _osdShowInputsConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "OsdShowInputs", default: false,
@@ -1146,6 +1194,7 @@ final class SettingsStore {
         guard !(_osdShowInputsConfig.suppressible && suppressINIWrites) else { return }
         _osdShowInputsConfig.writer(_osdShowInputsConfig.section, _osdShowInputsConfig.key, osdShowInputs)
         _osdShowInputsConfig.onSet?(osdShowInputs)
+        markOsdCustom()
     }}
     let _osdShowFrameTimesConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "OsdShowFrameTimes", default: false,
@@ -1155,6 +1204,7 @@ final class SettingsStore {
         guard !(_osdShowFrameTimesConfig.suppressible && suppressINIWrites) else { return }
         _osdShowFrameTimesConfig.writer(_osdShowFrameTimesConfig.section, _osdShowFrameTimesConfig.key, osdShowFrameTimes)
         _osdShowFrameTimesConfig.onSet?(osdShowFrameTimes)
+        markOsdCustom()
     }}
     let _osdShowVersionConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "OsdShowVersion", default: false,
@@ -1164,6 +1214,7 @@ final class SettingsStore {
         guard !(_osdShowVersionConfig.suppressible && suppressINIWrites) else { return }
         _osdShowVersionConfig.writer(_osdShowVersionConfig.section, _osdShowVersionConfig.key, osdShowVersion)
         _osdShowVersionConfig.onSet?(osdShowVersion)
+        markOsdCustom()
     }}
     let _osdShowHardwareInfoConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "OsdShowHardwareInfo", default: false,
@@ -1173,6 +1224,7 @@ final class SettingsStore {
         guard !(_osdShowHardwareInfoConfig.suppressible && suppressINIWrites) else { return }
         _osdShowHardwareInfoConfig.writer(_osdShowHardwareInfoConfig.section, _osdShowHardwareInfoConfig.key, osdShowHardwareInfo)
         _osdShowHardwareInfoConfig.onSet?(osdShowHardwareInfo)
+        markOsdCustom()
     }}
     let _osdShowTextureReplacementsConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "OsdShowTextureReplacements", default: false,
@@ -1191,6 +1243,7 @@ final class SettingsStore {
         guard !(_osdShowDeviceStatsConfig.suppressible && suppressINIWrites) else { return }
         _osdShowDeviceStatsConfig.writer(_osdShowDeviceStatsConfig.section, _osdShowDeviceStatsConfig.key, osdShowDeviceStats)
         _osdShowDeviceStatsConfig.onSet?(osdShowDeviceStats)
+        markOsdCustom()
     }}
 
     // ── Gamepad / UI ──
@@ -1273,6 +1326,50 @@ final class SettingsStore {
             }
             guard !suppressINIWrites else { return }
             ARMSX2Bridge.setINIFloat("ARMSX2iOS/UI", key: "AnalogStickScale", value: analogStickScale)
+        }
+    }
+    private static let stickInversionSection = "ARMSX2iOS/UI"
+    let _invertLeftStickXConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "InvertLeftStickX", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var invertLeftStickX: Bool = false { didSet {
+        guard !(_invertLeftStickXConfig.suppressible && suppressINIWrites) else { return }
+        _invertLeftStickXConfig.writer(_invertLeftStickXConfig.section, _invertLeftStickXConfig.key, invertLeftStickX)
+    }}
+    let _invertLeftStickYConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "InvertLeftStickY", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var invertLeftStickY: Bool = false { didSet {
+        guard !(_invertLeftStickYConfig.suppressible && suppressINIWrites) else { return }
+        _invertLeftStickYConfig.writer(_invertLeftStickYConfig.section, _invertLeftStickYConfig.key, invertLeftStickY)
+    }}
+    let _invertRightStickXConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "InvertRightStickX", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var invertRightStickX: Bool = false { didSet {
+        guard !(_invertRightStickXConfig.suppressible && suppressINIWrites) else { return }
+        _invertRightStickXConfig.writer(_invertRightStickXConfig.section, _invertRightStickXConfig.key, invertRightStickX)
+    }}
+    let _invertRightStickYConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "InvertRightStickY", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var invertRightStickY: Bool = false { didSet {
+        guard !(_invertRightStickYConfig.suppressible && suppressINIWrites) else { return }
+        _invertRightStickYConfig.writer(_invertRightStickYConfig.section, _invertRightStickYConfig.key, invertRightStickY)
+    }}
+
+    /// Effective axis inversion for a stick, resolving a per-game override (current game INI)
+    /// before the global default. Read live at the stick input choke point.
+    func stickInversion(for side: StickSide) -> (x: Bool, y: Bool) {
+        func resolve(_ key: String, global: Bool) -> Bool {
+            if ARMSX2Bridge.hasPerGameINIValueForCurrentGame(Self.stickInversionSection, key: key) {
+                return ARMSX2Bridge.getPerGameINIBoolForCurrentGame(Self.stickInversionSection, key: key, defaultValue: global)
+            }
+            return global
+        }
+        switch side {
+        case .left: return (resolve("InvertLeftStickX", global: invertLeftStickX), resolve("InvertLeftStickY", global: invertLeftStickY))
+        case .right: return (resolve("InvertRightStickX", global: invertRightStickX), resolve("InvertRightStickY", global: invertRightStickY))
         }
     }
     let _appLanguageConfig = Setting<AppLanguage>(
@@ -1409,25 +1506,38 @@ final class SettingsStore {
     }}
 
     // ── Library Background ──
-    var libraryBackgroundPath: String {
+    var backgroundPrimaryAsset: BackgroundAsset? {
         didSet {
-            UserDefaults.standard.set(libraryBackgroundPath, forKey: "ARMSX2iOSLibraryBackgroundPath")
-        }
-    }
-    var libraryLandscapeBackgroundPath: String {
-        didSet {
-            UserDefaults.standard.set(libraryLandscapeBackgroundPath, forKey: "ARMSX2iOSLibraryLandscapeBackgroundPath")
-        }
-    }
-    var libraryBackgroundRevision = 0
-    var libraryBackgroundDim: Double {
-        didSet {
-            let clamped = Self.clampedLibraryBackgroundDim(libraryBackgroundDim)
-            guard libraryBackgroundDim == clamped else {
-                libraryBackgroundDim = clamped
-                return
+            if let asset = backgroundPrimaryAsset {
+                UserDefaults.standard.set(try? JSONEncoder().encode(asset), forKey: "ARMSX2iOSBackgroundPrimaryAsset")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "ARMSX2iOSBackgroundPrimaryAsset")
             }
-            UserDefaults.standard.set(libraryBackgroundDim, forKey: "ARMSX2iOSLibraryBackgroundDim")
+        }
+    }
+    var backgroundLandscapeAsset: BackgroundAsset? {
+        didSet {
+            if let asset = backgroundLandscapeAsset {
+                UserDefaults.standard.set(try? JSONEncoder().encode(asset), forKey: "ARMSX2iOSBackgroundLandscapeAsset")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "ARMSX2iOSBackgroundLandscapeAsset")
+            }
+        }
+    }
+    var backgroundFitMode: BackgroundFitMode {
+        didSet { UserDefaults.standard.set(backgroundFitMode.rawValue, forKey: "ARMSX2iOSBackgroundFitMode") }
+    }
+    var backgroundLandscapeFitMode: BackgroundFitMode = .fill {
+        didSet { UserDefaults.standard.set(backgroundLandscapeFitMode.rawValue, forKey: "ARMSX2iOSBackgroundLandscapeFitMode") }
+    }
+    var backgroundVideoMuted: Bool {
+        didSet { UserDefaults.standard.set(backgroundVideoMuted, forKey: "ARMSX2iOSBackgroundVideoMuted") }
+    }
+    var backgroundDim: Double {
+        didSet {
+            let clamped = Self.clampedBackgroundDim(backgroundDim)
+            guard backgroundDim == clamped else { backgroundDim = clamped; return }
+            UserDefaults.standard.set(backgroundDim, forKey: "ARMSX2iOSBackgroundDim")
         }
     }
 
@@ -1549,6 +1659,7 @@ final class SettingsStore {
         maxAnisotropy = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "MaxAnisotropy", defaultValue: 0)), to: 0...16)
         hardwareDownloadMode = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "HWDownloadMode", defaultValue: 0)), to: 0...4)
         tvShader = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "TVShader", defaultValue: 0)), to: 0...7)
+        upscaler = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "Upscaler", defaultValue: 0))
         gsBoolHacks = Self.loadGSBoolHacks()
         // Screen / PCRTC
         pcrtcOffsets = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "pcrtc_offsets", defaultValue: false)
@@ -1602,6 +1713,10 @@ final class SettingsStore {
         autoFullscreen = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "AutoFullscreen", defaultValue: true)
         hideMenuButton = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "HideMenuButton", defaultValue: false)
         analogStickScale = Self.clampedAnalogStickScale(ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "AnalogStickScale", defaultValue: 1.0))
+        invertLeftStickX = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertLeftStickX", defaultValue: false)
+        invertLeftStickY = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertLeftStickY", defaultValue: false)
+        invertRightStickX = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertRightStickX", defaultValue: false)
+        invertRightStickY = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertRightStickY", defaultValue: false)
         appLanguage = AppLanguage(rawValue: ARMSX2Bridge.getINIString("ARMSX2iOS/UI", key: "AppLanguage", defaultValue: AppLanguage.system.rawValue)) ?? .system
         controllerMultitapMode = Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/Gamepad", key: "MultitapMode", defaultValue: 0))
         autoOpenStikDebug = ARMSX2Bridge.getINIBool("ARMSX2iOS/JIT", key: "AutoOpenStikDebug", defaultValue: false)
@@ -1617,15 +1732,27 @@ final class SettingsStore {
         dev9DNS1 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS1", defaultValue: "0.0.0.0")
         dev9DNS2Mode = ARMSX2Bridge.getINIString("DEV9/Eth", key: "ModeDNS2", defaultValue: "Auto")
         dev9DNS2 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS2", defaultValue: "0.0.0.0")
-        libraryBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryBackgroundPath") ?? ""
-        libraryLandscapeBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryLandscapeBackgroundPath") ?? ""
-        let savedDim = UserDefaults.standard.object(forKey: "ARMSX2iOSLibraryBackgroundDim") as? Double
-        libraryBackgroundDim = Self.clampedLibraryBackgroundDim(savedDim ?? 0.35)
+        BackgroundStorage.migrateLegacyBackgroundsIfNeeded()
+        backgroundPrimaryAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundPrimaryAsset")
+        backgroundLandscapeAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundLandscapeAsset")
+        backgroundFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundFitMode") ?? "") ?? .fill
+        backgroundLandscapeFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundLandscapeFitMode") ?? "") ?? .fill
+        backgroundVideoMuted = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundVideoMuted") as? Bool ?? true
+        backgroundDim = Self.clampedBackgroundDim(UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundDim") as? Double ?? 0.35)
         normalizeDEV9Settings()
         VPadSkinLibraryStore.shared.adoptLegacySelection(virtualPadSkin)
         ARMSX2Bridge.setINIString("EmuCore/GS", key: "AspectRatio", value: Self.aspectRatioName(for: aspectRatio))
-        // Apply OSD preset
-        ARMSX2Bridge.applyOsdPreset(Int32(osdPreset.rawValue))
+        // Do NOT re-apply the OSD preset here. The saved per-item OSD flags are the
+        // source of truth and are pushed into the live GSConfig natively by
+        // ARMSX2ApplyIOSOsdPresetFromConfig() at scene startup. Calling
+        // applyOsdPreset(preset) at load rewrote every flag from the preset and
+        // discarded the user settings.
+        // Seed the Custom OSD snapshot once from the loaded flags so cycling to Custom
+        // before any manual edit shows the current set rather than an empty overlay.
+        if !ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "OsdCustomSeeded", defaultValue: false) {
+            snapshotCustomOsd()
+            ARMSX2Bridge.setINIBool("ARMSX2iOS/UI", key: "OsdCustomSeeded", value: true)
+        }
     }
 
     /// Reload ALL settings from INI (call on VM start/stop)
@@ -1733,6 +1860,7 @@ final class SettingsStore {
         maxAnisotropy = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "MaxAnisotropy", defaultValue: 0)), to: 0...16)
         hardwareDownloadMode = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "HWDownloadMode", defaultValue: 0)), to: 0...4)
         tvShader = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "TVShader", defaultValue: 0)), to: 0...7)
+        upscaler = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "Upscaler", defaultValue: 0))
         gsBoolHacks = Self.loadGSBoolHacks()
         // Screen / PCRTC
         pcrtcOffsets = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "pcrtc_offsets", defaultValue: false)
@@ -1783,6 +1911,10 @@ final class SettingsStore {
         autoFullscreen = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "AutoFullscreen", defaultValue: true)
         hideMenuButton = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "HideMenuButton", defaultValue: false)
         analogStickScale = Self.clampedAnalogStickScale(ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "AnalogStickScale", defaultValue: 1.0))
+        invertLeftStickX = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertLeftStickX", defaultValue: false)
+        invertLeftStickY = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertLeftStickY", defaultValue: false)
+        invertRightStickX = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertRightStickX", defaultValue: false)
+        invertRightStickY = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertRightStickY", defaultValue: false)
         appLanguage = AppLanguage(rawValue: ARMSX2Bridge.getINIString("ARMSX2iOS/UI", key: "AppLanguage", defaultValue: AppLanguage.system.rawValue)) ?? .system
         controllerMultitapMode = Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/Gamepad", key: "MultitapMode", defaultValue: 0))
         autoOpenStikDebug = ARMSX2Bridge.getINIBool("ARMSX2iOS/JIT", key: "AutoOpenStikDebug", defaultValue: false)
@@ -1799,10 +1931,12 @@ final class SettingsStore {
         dev9DNS1 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS1", defaultValue: "0.0.0.0")
         dev9DNS2Mode = ARMSX2Bridge.getINIString("DEV9/Eth", key: "ModeDNS2", defaultValue: "Auto")
         dev9DNS2 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS2", defaultValue: "0.0.0.0")
-        libraryBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryBackgroundPath") ?? ""
-        libraryLandscapeBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryLandscapeBackgroundPath") ?? ""
-        let savedDimReload = UserDefaults.standard.object(forKey: "ARMSX2iOSLibraryBackgroundDim") as? Double
-        libraryBackgroundDim = Self.clampedLibraryBackgroundDim(savedDimReload ?? 0.35)
+        backgroundPrimaryAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundPrimaryAsset")
+        backgroundLandscapeAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundLandscapeAsset")
+        backgroundFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundFitMode") ?? "") ?? .fill
+        backgroundLandscapeFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundLandscapeFitMode") ?? "") ?? .fill
+        backgroundVideoMuted = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundVideoMuted") as? Bool ?? true
+        backgroundDim = Self.clampedBackgroundDim(UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundDim") as? Double ?? 0.35)
         normalizeDEV9Settings()
         VPadSkinLibraryStore.shared.adoptLegacySelection(virtualPadSkin)
     }
@@ -1834,9 +1968,30 @@ final class SettingsStore {
         return min(max(scale, 0.8), 1.6)
     }
 
-    private static func clampedLibraryBackgroundDim(_ value: Double) -> Double {
+    private static func clampedBackgroundDim(_ value: Double) -> Double {
         guard value.isFinite else { return 0.35 }
-        return min(max(value, 0.0), 0.8)
+        return min(max(value, 0.0), 1.0)
+    }
+
+    private static func loadBackgroundAsset(forKey key: String) -> BackgroundAsset? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(BackgroundAsset.self, from: data)
+    }
+
+    /// Removes background assets whose files no longer exist. Returns `true`
+    /// when at least one stale asset was cleared so callers can surface a notice.
+    @discardableResult
+    func sanitizeBackgroundAssets() -> Bool {
+        var removed = false
+        if let primary = backgroundPrimaryAsset, !BackgroundStorage.exists(primary) {
+            backgroundPrimaryAsset = nil
+            removed = true
+        }
+        if let landscape = backgroundLandscapeAsset, !BackgroundStorage.exists(landscape) {
+            backgroundLandscapeAsset = nil
+            removed = true
+        }
+        return removed
     }
 
     private static func clampedTextureOffset(_ offset: Int) -> Int {
@@ -1932,15 +2087,18 @@ final class SettingsStore {
 
     /// Apply OSD preset — writes ALL OSD flags to INI + GSConfig
     private func applyOsdPreset(_ preset: OsdPreset) {
+        guard preset != .custom else { return }
         ARMSX2Bridge.applyOsdPreset(Int32(preset.rawValue))
         if preset == .off {
             osdPerformancePosition = 0
-        } else if osdPerformancePosition == 0 {
-            osdPerformancePosition = Self.defaultOsdPerformancePosition
+        } else {
+            revealOsdPerformancePositionIfHidden()
         }
         let isSimple = preset == .simple
         let isDetail = preset == .detail
         let isFull = preset == .full
+        isProgrammaticOsdFlagChange = true
+        defer { isProgrammaticOsdFlagChange = false }
         osdShowFPS = isSimple || isDetail || isFull
         osdShowVPS = isDetail || isFull
         osdShowSpeed = isSimple || isDetail || isFull
@@ -1957,9 +2115,63 @@ final class SettingsStore {
         osdShowDeviceStats = isSimple || isDetail || isFull
     }
 
+    /// If the perf overlay is at the hidden position (None/0), restore it to the default
+    /// so newly-enabled perf stats become visible. Shared by applyOsdPreset + restoreCustomOsd.
+    private func revealOsdPerformancePositionIfHidden() {
+        if osdPerformancePosition == 0 {
+            osdPerformancePosition = Self.defaultOsdPerformancePosition
+        }
+    }
+
+    private static let osdCustomFlagKeyPaths: [(ReferenceWritableKeyPath<SettingsStore, Bool>, String)] = [
+        (\.osdShowFPS, "OsdCustomShowFPS"),
+        (\.osdShowVPS, "OsdCustomShowVPS"),
+        (\.osdShowSpeed, "OsdCustomShowSpeed"),
+        (\.osdShowCPU, "OsdCustomShowCPU"),
+        (\.osdShowGPU, "OsdCustomShowGPU"),
+        (\.osdShowResolution, "OsdCustomShowResolution"),
+        (\.osdShowGSStats, "OsdCustomShowGSStats"),
+        (\.osdShowIndicators, "OsdCustomShowIndicators"),
+        (\.osdShowSettings, "OsdCustomShowSettings"),
+        (\.osdShowInputs, "OsdCustomShowInputs"),
+        (\.osdShowFrameTimes, "OsdCustomShowFrameTimes"),
+        (\.osdShowVersion, "OsdCustomShowVersion"),
+        (\.osdShowHardwareInfo, "OsdCustomShowHardwareInfo"),
+        (\.osdShowDeviceStats, "OsdCustomShowDeviceStats"),
+    ]
+
+    private func snapshotCustomOsd() {
+        for (keyPath, key) in Self.osdCustomFlagKeyPaths {
+            ARMSX2Bridge.setINIBool("ARMSX2iOS/UI", key: key, value: self[keyPath: keyPath])
+        }
+    }
+
+    private func restoreCustomOsd() {
+        revealOsdPerformancePositionIfHidden()
+        isProgrammaticOsdFlagChange = true
+        for (keyPath, key) in Self.osdCustomFlagKeyPaths {
+            self[keyPath: keyPath] = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: key, defaultValue: self[keyPath: keyPath])
+        }
+        isProgrammaticOsdFlagChange = false
+    }
+
+    private func markOsdCustom() {
+        guard !suppressINIWrites, !isProgrammaticOsdFlagChange else { return }
+        isAutoMarkingCustom = true
+        if osdPreset != .custom {
+            osdPreset = .custom
+        }
+        isAutoMarkingCustom = false
+        snapshotCustomOsd()
+    }
+
     /// Reset emulator settings to ARMSX2 iOS defaults
     func resetEmulatorDefaults() {
         eeCoreType = 2          // ARM64 JIT
+        // Core uses EnableEE (not CoreType) to select interpreter vs recompiler.
+        // Restore EnableEE=true so the core actually uses the recompiler again,
+        // undoing any prior applyFullInterpreterPreset() that forced the interpreter.
+        ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "EnableEE", value: true)
         iopRecompiler = true
         vu0Recompiler = true
         vu1Recompiler = true
@@ -2008,6 +2220,10 @@ final class SettingsStore {
     /// Keep EE/IOP/VU0 fast while isolating suspected VU1 JIT regressions.
     func applyVU1CompatibilityPreset() {
         eeCoreType = 2
+        // Core uses EnableEE (not CoreType) to select interpreter vs recompiler.
+        // Restore EnableEE=true so the core actually uses the EE recompiler again,
+        // undoing any prior applyFullInterpreterPreset() that forced the interpreter.
+        ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "EnableEE", value: true)
         iopRecompiler = true
         vu0Recompiler = true
         vu1Recompiler = false
@@ -2019,6 +2235,9 @@ final class SettingsStore {
     /// Slow diagnostic preset for crash isolation when dynarec state is suspect.
     func applyFullInterpreterPreset() {
         eeCoreType = 1
+        // Core uses EnableEE (not CoreType) to select interpreter vs recompiler.
+        // Must write EnableEE=false to actually force the EE interpreter.
+        ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "EnableEE", value: false)
         iopRecompiler = false
         vu0Recompiler = false
         vu1Recompiler = false
@@ -2064,6 +2283,7 @@ final class SettingsStore {
         maxAnisotropy = 0
         hardwareDownloadMode = 0
         tvShader = 0
+        upscaler = 0
         for option in Self.gsBoolHackOptions {
             gsBoolHacks[option.key] = false
             ARMSX2Bridge.setINIBool("EmuCore/GS", key: option.key, value: false)

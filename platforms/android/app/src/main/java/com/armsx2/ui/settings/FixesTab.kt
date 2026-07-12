@@ -1,29 +1,19 @@
 package com.armsx2.ui.settings
 
 import androidx.compose.foundation.ScrollState
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.armsx2.config.Settings
 import com.armsx2.i18n.str
-import com.armsx2.ui.Colors
 import com.armsx2.ui.InGameOverlay
 
 /**
@@ -40,16 +30,14 @@ import com.armsx2.ui.InGameOverlay
 @Composable
 fun FixesTab(state: MutableState<Settings>) {
     val s = state.value
-    val scroll = remember { ScrollState(0) }
+    val scroll = settingsScrollState()
     ControllerAutoScroll(scroll)
 
     fun apply(updated: Settings) = InGameOverlay.saveSettings(updated)
 
     Column(
         modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(scroll)
-            .verticalScrollbar(scroll),
+            .fillMaxWidth(),
     ) {
         CollapsibleSection(str("fixes.section.display")) {
         HelpText(
@@ -133,8 +121,10 @@ fun FixesTab(state: MutableState<Settings>) {
         SettingsDivider()
         SegmentedRow(
             label = str("fixes.dithering.label"),
-            options = listOf(str("fixes.opt.off"), str("fixes.opt.scaled"), str("fixes.opt.unscaled")),
-            selectedIndex = s.dithering.coerceIn(0, 2),
+            // "Force 32bit" (native Dithering==3) removes PS2 16-bit color banding — many
+            // games look noticeably cleaner with it on.
+            options = listOf(str("fixes.opt.off"), str("fixes.opt.scaled"), str("fixes.opt.unscaled"), str("fixes.opt.force32")),
+            selectedIndex = s.dithering.coerceIn(0, 3),
             description = str("fixes.dithering.desc"),
             onChange = { apply(s.copy(dithering = it)) },
         )

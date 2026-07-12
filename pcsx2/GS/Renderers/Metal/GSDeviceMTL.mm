@@ -825,7 +825,7 @@ bool GSDeviceMTL::EnsureMetalFXSpatial(GSTexture* sTex, GSTexture* dTex)
 
 bool GSDeviceMTL::DoMetalFXSpatial(GSTexture* sTex, GSTexture* dTex)
 { @autoreleasepool {
-	if (@available(macOS 13.0, *))
+	if (@available(macOS 13.0, iOS 16.0, *))
 	{
 		if (!EnsureMetalFXSpatial(sTex, dTex))
 			return false;
@@ -934,19 +934,36 @@ bool GSDeviceMTL::HasSurface()  const { return static_cast<bool>(m_layer);}
 void GSDeviceMTL::AttachSurfaceOnMainThread()
 {
 	pxAssert([NSThread isMainThread]);
+	m_view = MRCRetain((__bridge GSMTLView*)m_window_info.window_handle);
+#if PCSX2_MTL_USES_UIVIEW
+	// On iOS the UIView already owns its backing CAMetalLayer (created by the host
+	// view). Reuse that existing layer instead of allocating a detached one that
+	// would never be attached to the view hierarchy.
+	CALayer* view_layer = [m_view layer];
+	if (![view_layer isKindOfClass:[CAMetalLayer class]])
+	{
+		return;
+	}
+
+	m_layer = MRCRetain((CAMetalLayer*)view_layer);
+	[m_layer setDrawableSize:CGSizeMake(m_window_info.surface_width, m_window_info.surface_height)];
+	[m_layer setDevice:m_dev.dev];
+#else
 	m_layer = MRCRetain([CAMetalLayer layer]);
 	[m_layer setDrawableSize:CGSizeMake(m_window_info.surface_width, m_window_info.surface_height)];
 	[m_layer setDevice:m_dev.dev];
-	m_view = MRCRetain((__bridge NSView*)m_window_info.window_handle);
 	[m_view setWantsLayer:YES];
 	[m_view setLayer:m_layer];
+#endif
 }
 
 void GSDeviceMTL::DetachSurfaceOnMainThread()
 {
 	pxAssert([NSThread isMainThread]);
+#if !PCSX2_MTL_USES_UIVIEW
 	[m_view setLayer:nullptr];
 	[m_view setWantsLayer:NO];
+#endif
 	m_view = nullptr;
 	m_layer = nullptr;
 }
@@ -1113,7 +1130,9 @@ bool GSDeviceMTL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 
 		// Metal does not support mailbox.
 		m_vsync_mode = (m_vsync_mode == GSVSyncMode::Mailbox) ? GSVSyncMode::FIFO : m_vsync_mode;
+#if !TARGET_OS_IPHONE
 		[m_layer setDisplaySyncEnabled:m_vsync_mode == GSVSyncMode::FIFO];
+#endif
 	}
 	else
 	{
@@ -1125,7 +1144,13 @@ bool GSDeviceMTL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	m_features.broken_point_sampler = false;
 	m_features.vs_expand = !GSConfig.DisableVertexShaderExpand;
 	m_features.primitive_id = m_dev.features.primid;
+	// Apple GPUs cannot synchronize fragment writes to fragment reads within a
+	// render pass. Let the GS renderer choose its non-barrier feedback fallback.
+#if TARGET_OS_IPHONE
+	m_features.texture_barrier = false;
+#else
 	m_features.texture_barrier = true;
+#endif
 	m_features.multidraw_fb_copy = false;
 	m_features.provoking_vertex_last = false;
 	m_features.point_expand = true;
@@ -1139,7 +1164,10 @@ bool GSDeviceMTL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	m_features.test_and_sample_depth = true;
 	m_features.depth_feedback = getDepthFeedback(m_dev, m_features.framebuffer_fetch);
 	m_features.aa1 = GSConfig.HWAA1 && m_features.vs_expand;
-	if (@available(macOS 13.0, *))
+	// MetalFX spatial upscaler: macOS 13+ / iOS 16+. The supportsDevice: probe
+	// returns NO on the iOS Simulator and on devices whose GPU lacks the hardware,
+	// so this is safe to run unconditionally on every Apple platform.
+	if (@available(macOS 13.0, iOS 16.0, *))
 		m_features.metalfx_spatial = [MTLFXSpatialScalerDescriptor supportsDevice:m_dev.dev];
 	m_features.rov = m_dev.features.rov && !m_features.framebuffer_fetch;
 	m_max_texture_size = m_dev.features.max_texsize;
@@ -1577,9 +1605,11 @@ void GSDeviceMTL::EndPresent()
 				if (!frames)
 				{
 					[[MTLCaptureManager sharedCaptureManager] stopCapture];
-					Console.WriteLn("Metal Trace Capture to /tmp/PCSX2MTLCapture.gputrace finished");
-					[[NSWorkspace sharedWorkspace] selectFile:path
-					                 inFileViewerRootedAtPath:@"/tmp/"];
+				Console.WriteLn("Metal Trace Capture to /tmp/PCSX2MTLCapture.gputrace finished");
+#if !TARGET_OS_IPHONE
+				[[NSWorkspace sharedWorkspace] selectFile:path
+				                 inFileViewerRootedAtPath:@"/tmp/"];
+#endif
 				}
 			}
 			else if (s_capture_next)
@@ -1623,7 +1653,9 @@ void GSDeviceMTL::SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
 		return;
 
 	m_vsync_mode = (mode == GSVSyncMode::Mailbox) ? GSVSyncMode::FIFO : mode;
+#if !TARGET_OS_IPHONE
 	[m_layer setDisplaySyncEnabled:m_vsync_mode == GSVSyncMode::FIFO];
+#endif
 }
 
 bool GSDeviceMTL::SetGPUTimingEnabled(bool enabled)
@@ -2215,9 +2247,17 @@ void GSDeviceMTL::MRESetSampler(SamplerSelector sel)
 
 static void textureBarrier(id<MTLRenderCommandEncoder> enc)
 {
+#if TARGET_OS_IPHONE
+#if !TARGET_OS_SIMULATOR
+	[enc memoryBarrierWithScope:MTLBarrierScopeTextures
+	                afterStages:MTLRenderStageFragment
+	               beforeStages:MTLRenderStageFragment];
+#endif
+#else
 	[enc memoryBarrierWithScope:MTLBarrierScopeRenderTargets
 	                afterStages:MTLRenderStageFragment
 	               beforeStages:MTLRenderStageFragment];
+#endif
 }
 
 void GSDeviceMTL::MRESetTexture(GSTexture* tex, int pos)

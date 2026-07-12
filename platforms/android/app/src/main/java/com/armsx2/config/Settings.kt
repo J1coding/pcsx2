@@ -1,8 +1,10 @@
 package com.armsx2.config
 
+import com.armsx2.config.Settings.Companion.emitSink
+import com.armsx2.config.Settings.Companion.merge
 import kr.co.iefriends.pcsx2.NativeApp
-import org.json.JSONObject
 import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Resolved emulator config used to drive a VM launch / live-apply.
@@ -229,7 +231,7 @@ data class Settings(
     val spinCpuReadbacks: Boolean = false,
     /** EmuCore/GS/IntegerScaling — integer pixel scaling for the presented image. Default off. */
     val integerScaling: Boolean = false,
-    /** EmuCore/GS/dithering_ps2 — 0 Off / 1 Scaled / 2 Unscaled. PCSX2 default Unscaled. */
+    /** EmuCore/GS/dithering_ps2 — 0 Off / 1 Scaled / 2 Unscaled / 3 Force 32bit. PCSX2 default Unscaled. */
     val dithering: Int = 2,
     /** EmuCore/GS/VsyncQueueSize — frames the GS thread may queue (0-3). PCSX2 default 2. */
     val vsyncQueueSize: Int = 2,
@@ -307,7 +309,7 @@ data class Settings(
     /** USB1/Type = hidkbd — attach an emulated USB HID keyboard on USB port 1.
      *  Needed by games that require a real USB keyboard (EverQuest Online
      *  Adventures, Konami-keyboard titles). A physical/Bluetooth keyboard's key
-     *  events are forwarded to it (see Main.dispatchKeyEvent → NativeApp.usbKeyboardKey).
+     *  events are forwarded to it (see MainActivityRuntime.dispatchKeyEvent → NativeApp.usbKeyboardKey).
      *  Default off. */
     val usbKeyboard: Boolean = false,
 
@@ -390,6 +392,12 @@ data class Settings(
     val shadeBoostContrast: Int = 50,
     val shadeBoostSaturation: Int = 50,
     val shadeBoostGamma: Int = 50,
+    /** EmuCore/GS/fxaa — FXAA post-process anti-aliasing. */
+    val fxaa: Boolean = false,
+    /** EmuCore/GS/CASMode — GSCASMode: 0 Off / 1 Sharpen Only / 2 Sharpen + Resize. */
+    val casMode: Int = 0,
+    /** EmuCore/GS/CASSharpness — sharpening strength 0..100 (%). */
+    val casSharpness: Int = 50,
     /** EmuCore/GS/LoadTextureReplacements. */
     val loadTextureReplacements: Boolean = false,
     /** EmuCore/GS/LoadTextureReplacementsAsync. */
@@ -781,6 +789,9 @@ data class Settings(
         put("EmuCore/GS", "ShadeBoost_Contrast", "int", shadeBoostContrast.coerceIn(1, 100).toString())
         put("EmuCore/GS", "ShadeBoost_Saturation", "int", shadeBoostSaturation.coerceIn(1, 100).toString())
         put("EmuCore/GS", "ShadeBoost_Gamma", "int", shadeBoostGamma.coerceIn(1, 100).toString())
+        put("EmuCore/GS", "fxaa", "bool", fxaa.toString())
+        put("EmuCore/GS", "CASMode", "int", casMode.coerceIn(0, 2).toString())
+        put("EmuCore/GS", "CASSharpness", "int", casSharpness.coerceIn(0, 100).toString())
         put("EmuCore/GS", "LoadTextureReplacements", "bool", loadTextureReplacements.toString())
         put("EmuCore/GS", "LoadTextureReplacementsAsync", "bool", loadTextureReplacementsAsync.toString())
         put("EmuCore/GS", "PrecacheTextureReplacements", "bool", precacheTextureReplacements.toString())
@@ -811,7 +822,6 @@ data class Settings(
         put("EmuCore/GS", "DisableFramebufferFetch", "bool", disableFramebufferFetch.toString())
         put("EmuCore/GS", "HWROV", "bool", hwRov.toString())
         put("EmuCore/GS", "HWAA1", "bool", hwAa1.toString())
-        put("EmuCore/GS", "HWAccurateAlphaTest", "bool", hwAat.toString())
         put("EmuCore/GS", "EnableAdrenoFramebufferFetch", "bool", adrenoFbFetch.toString())
         put("EmuCore/GS", "OverrideTextureBarriers", "int", overrideTextureBarriers.coerceIn(-1, 1).toString())
         put("EmuCore/GS", "DisableVertexShaderExpand", "bool", disableVertexShaderExpand.toString())
@@ -822,7 +832,7 @@ data class Settings(
         put("EmuCore/GS", "HWSpinGPUForReadbacks", "bool", spinGpuReadbacks.toString())
         put("EmuCore/GS", "HWSpinCPUForReadbacks", "bool", spinCpuReadbacks.toString())
         put("EmuCore/GS", "IntegerScaling", "bool", integerScaling.toString())
-        put("EmuCore/GS", "dithering_ps2", "int", dithering.coerceIn(0, 2).toString())
+        put("EmuCore/GS", "dithering_ps2", "int", dithering.coerceIn(0, 3).toString())
         put("EmuCore/GS", "VsyncQueueSize", "int", vsyncQueueSize.coerceIn(0, 3).toString())
         put("EmuCore/GS", "autoflush_sw", "bool", autoFlushSw.toString())
         put("EmuCore/GS", "mipmap", "bool", mipmapSw.toString())
@@ -921,6 +931,9 @@ data class Settings(
             shadeBoostContrast != other.shadeBoostContrast ||
             shadeBoostSaturation != other.shadeBoostSaturation ||
             shadeBoostGamma != other.shadeBoostGamma ||
+            fxaa != other.fxaa ||
+            casMode != other.casMode ||
+            casSharpness != other.casSharpness ||
             accurateBlendingUnit != other.accurateBlendingUnit ||
             hwMipmap != other.hwMipmap ||
             triFilter != other.triFilter ||
@@ -1031,7 +1044,6 @@ data class Settings(
         put("disableFramebufferFetch", disableFramebufferFetch)
         put("hwRov", hwRov)
         put("hwAa1", hwAa1)
-        put("hwAat", hwAat)
         put("adrenoFbFetch", adrenoFbFetch)
         put("overrideTextureBarriers", overrideTextureBarriers)
         put("disableVertexShaderExpand", disableVertexShaderExpand)
@@ -1104,6 +1116,9 @@ data class Settings(
         put("shadeBoostContrast", shadeBoostContrast)
         put("shadeBoostSaturation", shadeBoostSaturation)
         put("shadeBoostGamma", shadeBoostGamma)
+        put("fxaa", fxaa)
+        put("casMode", casMode)
+        put("casSharpness", casSharpness)
         put("loadTextureReplacements", loadTextureReplacements)
         put("loadTextureReplacementsAsync", loadTextureReplacementsAsync)
         put("precacheTextureReplacements", precacheTextureReplacements)
@@ -1260,13 +1275,16 @@ data class Settings(
                 disableFramebufferFetch = json.optBoolean("disableFramebufferFetch", def.disableFramebufferFetch),
                 hwRov = json.optBoolean("hwRov", def.hwRov),
                 hwAa1 = json.optBoolean("hwAa1", def.hwAa1),
-                hwAat = json.optBoolean("hwAat", def.hwAat),
+                hwAat = false,
                 adrenoFbFetch = json.optBoolean("adrenoFbFetch", def.adrenoFbFetch),
                 overrideTextureBarriers = json.optInt("overrideTextureBarriers", def.overrideTextureBarriers),
                 disableVertexShaderExpand = json.optBoolean("disableVertexShaderExpand", def.disableVertexShaderExpand),
                 useBlitSwapChain = json.optBoolean("useBlitSwapChain", def.useBlitSwapChain),
                 disableShaderCache = json.optBoolean("disableShaderCache", def.disableShaderCache),
-                hwAccurateAlphaTest = json.optBoolean("hwAccurateAlphaTest", def.hwAccurateAlphaTest),
+                hwAccurateAlphaTest = json.optBoolean(
+                    "hwAccurateAlphaTest",
+                    json.optBoolean("hwAat", def.hwAccurateAlphaTest),
+                ),
                 skipDrawStart = json.optInt("skipDrawStart", def.skipDrawStart),
                 skipDrawEnd = json.optInt("skipDrawEnd", def.skipDrawEnd),
                 spinGpuReadbacks = json.optBoolean("spinGpuReadbacks", def.spinGpuReadbacks),
@@ -1339,6 +1357,9 @@ data class Settings(
                 shadeBoostContrast = json.optInt("shadeBoostContrast", def.shadeBoostContrast),
                 shadeBoostSaturation = json.optInt("shadeBoostSaturation", def.shadeBoostSaturation),
                 shadeBoostGamma = json.optInt("shadeBoostGamma", def.shadeBoostGamma),
+                fxaa = json.optBoolean("fxaa", def.fxaa),
+                casMode = json.optInt("casMode", def.casMode),
+                casSharpness = json.optInt("casSharpness", def.casSharpness),
                 loadTextureReplacements = json.optBoolean("loadTextureReplacements", def.loadTextureReplacements),
                 loadTextureReplacementsAsync = json.optBoolean("loadTextureReplacementsAsync", def.loadTextureReplacementsAsync),
                 precacheTextureReplacements = json.optBoolean("precacheTextureReplacements", def.precacheTextureReplacements),
@@ -1470,7 +1491,6 @@ data class Settings(
             if (current.disableFramebufferFetch != base.disableFramebufferFetch) j.put("disableFramebufferFetch", current.disableFramebufferFetch)
             if (current.hwRov != base.hwRov) j.put("hwRov", current.hwRov)
             if (current.hwAa1 != base.hwAa1) j.put("hwAa1", current.hwAa1)
-            if (current.hwAat != base.hwAat) j.put("hwAat", current.hwAat)
             if (current.adrenoFbFetch != base.adrenoFbFetch) j.put("adrenoFbFetch", current.adrenoFbFetch)
             if (current.overrideTextureBarriers != base.overrideTextureBarriers) j.put("overrideTextureBarriers", current.overrideTextureBarriers)
             if (current.disableVertexShaderExpand != base.disableVertexShaderExpand) j.put("disableVertexShaderExpand", current.disableVertexShaderExpand)
@@ -1506,6 +1526,17 @@ data class Settings(
             if (current.dev9AutoGateway     != base.dev9AutoGateway)     j.put("dev9AutoGateway", current.dev9AutoGateway)
             if (current.dev9ModeDns1        != base.dev9ModeDns1)        j.put("dev9ModeDns1", current.dev9ModeDns1)
             if (current.dev9ModeDns2        != base.dev9ModeDns2)        j.put("dev9ModeDns2", current.dev9ModeDns2)
+            if (current.dev9EthHosts        != base.dev9EthHosts) {
+                j.put("dev9EthHosts", JSONArray().apply {
+                    current.dev9EthHosts.forEach { host ->
+                        put(JSONObject().apply {
+                            put("url", host.url)
+                            put("ip", host.ip)
+                            put("enabled", host.enabled)
+                        })
+                    }
+                })
+            }
             if (current.dev9HddEnable       != base.dev9HddEnable)       j.put("dev9HddEnable", current.dev9HddEnable)
             if (current.dev9HddFile         != base.dev9HddFile)         j.put("dev9HddFile", current.dev9HddFile)
             if (current.memoryCardSlot1Enabled != base.memoryCardSlot1Enabled) j.put("memoryCardSlot1Enabled", current.memoryCardSlot1Enabled)
@@ -1534,6 +1565,9 @@ data class Settings(
             if (current.shadeBoostContrast  != base.shadeBoostContrast)  j.put("shadeBoostContrast", current.shadeBoostContrast)
             if (current.shadeBoostSaturation != base.shadeBoostSaturation) j.put("shadeBoostSaturation", current.shadeBoostSaturation)
             if (current.shadeBoostGamma     != base.shadeBoostGamma)     j.put("shadeBoostGamma", current.shadeBoostGamma)
+            if (current.fxaa                != base.fxaa)                j.put("fxaa", current.fxaa)
+            if (current.casMode             != base.casMode)             j.put("casMode", current.casMode)
+            if (current.casSharpness        != base.casSharpness)        j.put("casSharpness", current.casSharpness)
             if (current.loadTextureReplacements != base.loadTextureReplacements) j.put("loadTextureReplacements", current.loadTextureReplacements)
             if (current.loadTextureReplacementsAsync != base.loadTextureReplacementsAsync) j.put("loadTextureReplacementsAsync", current.loadTextureReplacementsAsync)
             if (current.precacheTextureReplacements != base.precacheTextureReplacements) j.put("precacheTextureReplacements", current.precacheTextureReplacements)
@@ -1655,13 +1689,17 @@ data class Settings(
             disableFramebufferFetch = if (overrides.has("disableFramebufferFetch")) overrides.getBoolean("disableFramebufferFetch") else base.disableFramebufferFetch,
             hwRov = if (overrides.has("hwRov")) overrides.getBoolean("hwRov") else base.hwRov,
             hwAa1 = if (overrides.has("hwAa1")) overrides.getBoolean("hwAa1") else base.hwAa1,
-            hwAat = if (overrides.has("hwAat")) overrides.getBoolean("hwAat") else base.hwAat,
+            hwAat = false,
             adrenoFbFetch = if (overrides.has("adrenoFbFetch")) overrides.getBoolean("adrenoFbFetch") else base.adrenoFbFetch,
             overrideTextureBarriers = if (overrides.has("overrideTextureBarriers")) overrides.getInt("overrideTextureBarriers") else base.overrideTextureBarriers,
             disableVertexShaderExpand = if (overrides.has("disableVertexShaderExpand")) overrides.getBoolean("disableVertexShaderExpand") else base.disableVertexShaderExpand,
             useBlitSwapChain = if (overrides.has("useBlitSwapChain")) overrides.getBoolean("useBlitSwapChain") else base.useBlitSwapChain,
             disableShaderCache = if (overrides.has("disableShaderCache")) overrides.getBoolean("disableShaderCache") else base.disableShaderCache,
-            hwAccurateAlphaTest = if (overrides.has("hwAccurateAlphaTest")) overrides.getBoolean("hwAccurateAlphaTest") else base.hwAccurateAlphaTest,
+            hwAccurateAlphaTest = when {
+                overrides.has("hwAccurateAlphaTest") -> overrides.getBoolean("hwAccurateAlphaTest")
+                overrides.has("hwAat") -> overrides.getBoolean("hwAat")
+                else -> base.hwAccurateAlphaTest
+            },
             skipDrawStart = if (overrides.has("skipDrawStart")) overrides.getInt("skipDrawStart") else base.skipDrawStart,
             skipDrawEnd = if (overrides.has("skipDrawEnd")) overrides.getInt("skipDrawEnd") else base.skipDrawEnd,
             spinGpuReadbacks = if (overrides.has("spinGpuReadbacks")) overrides.getBoolean("spinGpuReadbacks") else base.spinGpuReadbacks,
@@ -1691,6 +1729,23 @@ data class Settings(
             dev9AutoGateway = if (overrides.has("dev9AutoGateway")) overrides.getBoolean("dev9AutoGateway") else base.dev9AutoGateway,
             dev9ModeDns1 = if (overrides.has("dev9ModeDns1")) overrides.getString("dev9ModeDns1").ifEmpty { base.dev9ModeDns1 } else base.dev9ModeDns1,
             dev9ModeDns2 = if (overrides.has("dev9ModeDns2")) overrides.getString("dev9ModeDns2").ifEmpty { base.dev9ModeDns2 } else base.dev9ModeDns2,
+            dev9EthHosts = if (overrides.has("dev9EthHosts")) {
+                overrides.optJSONArray("dev9EthHosts")?.let { array ->
+                    buildList {
+                        repeat(array.length()) { index ->
+                            array.optJSONObject(index)?.let { host ->
+                                add(
+                                    Dev9HostMapping(
+                                        url = host.optString("url"),
+                                        ip = host.optString("ip", "0.0.0.0"),
+                                        enabled = host.optBoolean("enabled", true),
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                } ?: base.dev9EthHosts
+            } else base.dev9EthHosts,
             dev9HddEnable = if (overrides.has("dev9HddEnable")) overrides.getBoolean("dev9HddEnable") else base.dev9HddEnable,
             dev9HddFile = if (overrides.has("dev9HddFile")) overrides.getString("dev9HddFile").ifEmpty { base.dev9HddFile } else base.dev9HddFile,
             memoryCardSlot1Enabled = if (overrides.has("memoryCardSlot1Enabled")) overrides.getBoolean("memoryCardSlot1Enabled") else base.memoryCardSlot1Enabled,
@@ -1723,6 +1778,9 @@ data class Settings(
             shadeBoostContrast = if (overrides.has("shadeBoostContrast")) overrides.getInt("shadeBoostContrast") else base.shadeBoostContrast,
             shadeBoostSaturation = if (overrides.has("shadeBoostSaturation")) overrides.getInt("shadeBoostSaturation") else base.shadeBoostSaturation,
             shadeBoostGamma = if (overrides.has("shadeBoostGamma")) overrides.getInt("shadeBoostGamma") else base.shadeBoostGamma,
+            fxaa = if (overrides.has("fxaa")) overrides.getBoolean("fxaa") else base.fxaa,
+            casMode = if (overrides.has("casMode")) overrides.getInt("casMode") else base.casMode,
+            casSharpness = if (overrides.has("casSharpness")) overrides.getInt("casSharpness") else base.casSharpness,
             loadTextureReplacements = if (overrides.has("loadTextureReplacements")) overrides.getBoolean("loadTextureReplacements") else base.loadTextureReplacements,
             loadTextureReplacementsAsync = if (overrides.has("loadTextureReplacementsAsync")) overrides.getBoolean("loadTextureReplacementsAsync") else base.loadTextureReplacementsAsync,
             precacheTextureReplacements = if (overrides.has("precacheTextureReplacements")) overrides.getBoolean("precacheTextureReplacements") else base.precacheTextureReplacements,

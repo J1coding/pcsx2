@@ -19,6 +19,7 @@
 #include "pcsx2/Counters.h"
 #include "pcsx2/VMManager.h"
 #include "pcsx2/CDVD/CDVDcommon.h"
+#include "pcsx2/CDVD/CDVD.h" // cdvdSaveNVRAM (flush BIOS NVM on background)
 #include "SIO/Memcard/MemoryCardFile.h"
 #include "pcsx2/Patch.h"
 #include "pcsx2/R5900.h"
@@ -51,6 +52,8 @@
 #include "MTGS.h"
 #include "SPU2/spu2.h"
 #include "GS/Renderers/Vulkan/VKLoader.h"
+#include "GS/Renderers/HW/GSTextureReplacements.h"
+#include "GS/Renderers/Common/GSRenderer.h"
 #include "SDL3/SDL.h"
 #include "ps2/BiosTools.h"
 #include "BuildVersion.h"
@@ -353,18 +356,21 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
         si.SetBoolValue("Logging", "EnableTimestamps", true);
         si.SetBoolValue("Logging", "EnableVerbose", true);
 
-        // and show some stats :)
-        si.SetBoolValue("EmuCore/GS", "OsdShowFPS", true);
-        si.SetBoolValue("EmuCore/GS", "OsdShowSpeed", true);
-        si.SetBoolValue("EmuCore/GS", "OsdShowResolution", true);
-        si.SetBoolValue("EmuCore/GS", "OsdShowCPU", true);
-        si.SetBoolValue("EmuCore/GS", "OsdShowGPU", true);
-        si.SetBoolValue("EmuCore/GS", "OsdShowGSStats", true);
-        si.SetBoolValue("EmuCore/GS", "OsdShowFrameTimes", true);
-        si.SetBoolValue("EmuCore/GS", "OsdShowHardwareInfo", true);
-        si.SetBoolValue("EmuCore/GS", "OsdShowVersion", true);
-        si.SetBoolValue("EmuCore/GS", "OsdShowSettings", true);
-        si.SetBoolValue("EmuCore/GS", "OsdShowInputs", true);
+        // Perf OSD defaults OFF (it reads as clutter). The canonical GSOptions
+        // bitfields default every OsdShow* to 1 (desktop PCSX2 shows FPS etc. by
+        // default), so we MUST explicitly seed them false here — otherwise a fresh
+        // install renders the overlay even though the UI toggle reads "off".
+        // This block only runs when the INI IsEmpty() (first launch), so it never
+        // clobbers a returning user who turned the OSD on; the overlay renderer
+        // (ImGuiOverlays.cpp DrawPerformanceOverlay) reads EmuConfig.GS, which loads
+        // exactly these seeded values. The in-game "On-screen display" toggle turns
+        // them back on and persists true, which this block then skips.
+        for (const char* k : {"OsdShowFPS", "OsdShowVPS", "OsdShowSpeed", "OsdShowResolution",
+            "OsdShowGSStats", "OsdShowCPU", "OsdShowGPU", "OsdShowGPUStats", "OsdShowFrameTimes",
+            "OsdShowHardwareInfo", "OsdShowVersion", "OsdShowSettings", "OsdShowInputs"})
+        {
+            si.SetBoolValue("EmuCore/GS", k, false);
+        }
 //        // remove memory cards, so we don't have sharing violations
 //        for (u32 i = 0; i < 2; i++)
 //        {
@@ -901,6 +907,13 @@ Java_kr_co_iefriends_pcsx2_NativeApp_createMemoryCard(JNIEnv *env, jclass clazz,
 }
 
 extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_isMemoryCard(JNIEnv *env, jclass clazz, jstring p_name) {
+    const std::string name = GetJavaString(env, p_name);
+    return (!name.empty() && FileMcd_GetCardInfo(name).has_value()) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setNominalSpeed(JNIEnv *env, jclass clazz,
                                                      jint p_percent) {
@@ -1008,12 +1021,22 @@ extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_speedhackEecyclerate(JNIEnv *env, jclass clazz,
                                                           jint p_value) {
+    const int value = std::clamp(static_cast<int>(p_value), -3, 3);
+    Host::SetBaseIntSettingValue("EmuCore/Speedhacks", "EECycleRate", value);
+    EmuConfig.Speedhacks.EECycleRate = value;
+    if (VMManager::HasValidVM())
+        VMManager::ApplySettings();
 }
 
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_speedhackEecycleskip(JNIEnv *env, jclass clazz,
                                                           jint p_value) {
+    const int value = std::clamp(static_cast<int>(p_value), 0, 3);
+    Host::SetBaseIntSettingValue("EmuCore/Speedhacks", "EECycleSkip", value);
+    EmuConfig.Speedhacks.EECycleSkip = value;
+    if (VMManager::HasValidVM())
+        VMManager::ApplySettings();
 }
 
 extern "C"
@@ -1329,6 +1352,20 @@ Java_kr_co_iefriends_pcsx2_NativeApp_reloadPatches(JNIEnv *env, jclass clazz) {
     const u32 active_cheats = Patch::GetActiveCheatsCount();
     Console.WriteLnFmt("@@ANDROID_PNACH@@ reload active_cheats={}", active_cheats);
     return static_cast<jint>(active_cheats);
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_reloadTextureReplacements(JNIEnv *env, jclass clazz) {
+    if (!MTGS::IsOpen())
+        return JNI_FALSE;
+    MTGS::RunOnGSThread([]() {
+        if (!g_gs_renderer)
+            return;
+        GSTextureReplacements::ReloadReplacementMap();
+        g_gs_renderer->PurgeTextureCache(true, false, true);
+    });
+    return JNI_TRUE;
 }
 
 extern "C"
@@ -1947,7 +1984,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
         _szPath.empty() ? 1 : 0, _szPath);
     Console.Error("Loading %s", _szPath.c_str());
     if (!VMManager::Internal::CPUThreadInitialize()) {
+        Console.Error("@@ANDROID_CPU_THREAD_INIT_FAILED@@");
         VMManager::Internal::CPUThreadShutdown();
+        return false;
     }
 
     // Wait for Android surface before opening GS
@@ -1973,7 +2012,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
         +EmuConfig.Cpu.Recompiler.fpuExtraOverflow);
     GSDumpReplayer::SetIsDumpRunner(false);
 
-    if (VMManager::Initialize(boot_params, nullptr) == VMBootResult::StartupSuccess)
+    Error boot_error;
+    const VMBootResult boot_result = VMManager::Initialize(boot_params, &boot_error);
+    if (boot_result == VMBootResult::StartupSuccess)
     {
         Console.Error("VM INIT");
         // Apply the persisted frame-limit preference now that the VM is up.
@@ -2027,6 +2068,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
         ////
         VMManager::Shutdown(false);
     }
+    else
+    {
+        Console.Error("@@ANDROID_VM_INIT_FAILED@@ result=%d error=%s",
+            static_cast<int>(boot_result), boot_error.GetDescription().c_str());
+    }
     ////
     Host::PumpMessagesOnCPUThread();
     VMManager::Internal::CPUThreadShutdown();
@@ -2051,6 +2097,15 @@ Java_kr_co_iefriends_pcsx2_NativeApp_pause(JNIEnv *env, jclass clazz) {
         Host::RunOnCPUThread([]() {
             if (VMManager::HasValidVM() && VMManager::GetState() == VMState::Running)
                 VMManager::SetPaused(true);
+            // Persist the BIOS NVRAM (clock / language / console config) on every
+            // background/pause, not only on a clean Shutdown. Android users background
+            // or swipe the app far more than they cleanly Stop a game, and the process
+            // is frequently killed while paused — so BIOS config written to the in-RAM
+            // NVM buffer never reached disk, and the BIOS re-ran its first-boot setup
+            // on every launch. Runs on the CPU thread (owns CDVD state); cdvdSaveNVRAM()
+            // no-ops when the NVM is unchanged, so pausing repeatedly is cheap.
+            if (VMManager::HasValidVM())
+                cdvdSaveNVRAM();
         });
 
         if (!s_execute_exit.load(std::memory_order_acquire) && Cpu)
@@ -2183,13 +2238,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveStateToSlot(JNIEnv *env, jclass clazz, 
         Console.Error("saveStateToSlot: CPU thread failed to park, refusing to save");
         return false;
     }
-    // SaveStateToSlot calls error_callback on failure paths (memcard busy,
-    // bad path) — passing a null std::function would std::bad_function_call.
-    // No-op lambda swallows errors silently for now; proper UI surfacing
-    // can be wired later if needed.
+    std::string save_error;
     VMManager::SaveStateToSlot(p_slot, /*zip_on_thread=*/false,
-        [](const std::string&) {});
-    return true;
+        [&save_error](const std::string& error) { save_error = error; });
+    if (!save_error.empty()) {
+        Console.Error("saveStateToSlot: %s", save_error.c_str());
+        return false;
+    }
+    const std::string filename = VMManager::GetSaveStateFileName(
+        VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC(), p_slot);
+    return !filename.empty() && FileSystem::FileExists(filename.c_str());
 }
 
 extern "C"
@@ -2292,6 +2350,33 @@ Java_kr_co_iefriends_pcsx2_NativeApp_getImageSlot(JNIEnv *env, jclass clazz, jin
     return retArr;
 }
 
+extern "C"
+JNIEXPORT jbyteArray JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getSaveStateImage(JNIEnv *env, jclass clazz, jstring p_path) {
+    const std::string filename = GetJavaString(env, p_path);
+    if (filename.empty())
+        return nullptr;
+
+    zip_error_t ze = {};
+    auto zf = zip_open_managed(filename.c_str(), ZIP_RDONLY, &ze);
+    if (!zf)
+        return nullptr;
+
+    auto screenshot = zip_fopen_managed(zf.get(), "Screenshot.png", 0);
+    if (!screenshot)
+        return nullptr;
+
+    std::optional<std::vector<u8>> data(ReadBinaryFileInZip(screenshot.get()));
+    if (!data.has_value() || data->empty())
+        return nullptr;
+
+    const jsize length = static_cast<jsize>(data->size());
+    jbyteArray result = env->NewByteArray(length);
+    if (result)
+        env->SetByteArrayRegion(result, 0, length, reinterpret_cast<const jbyte*>(data->data()));
+    return result;
+}
+
 // =====================  Autosave-on-exit slot  =====================
 // Backed by VMManager::SAVESTATE_SLOT_AUTOSAVE (s32 sentinel = -2),
 // stored as `{serial} (CRC).autosave.p2s`. Lets "Save State And Exit"
@@ -2310,9 +2395,17 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveAutosaveState(JNIEnv *env, jclass clazz
         Console.Error("saveAutosaveState: CPU thread failed to park, refusing to save");
         return false;
     }
+    std::string save_error;
     VMManager::SaveStateToSlot(VMManager::SAVESTATE_SLOT_AUTOSAVE, /*zip_on_thread=*/false,
-        [](const std::string&) {});
-    return true;
+        [&save_error](const std::string& error) { save_error = error; });
+    if (!save_error.empty()) {
+        Console.Error("saveAutosaveState: %s", save_error.c_str());
+        return false;
+    }
+    const std::string filename = VMManager::GetSaveStateFileName(
+        VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC(),
+        VMManager::SAVESTATE_SLOT_AUTOSAVE);
+    return !filename.empty() && FileSystem::FileExists(filename.c_str());
 }
 
 extern "C"
@@ -2981,9 +3074,31 @@ int Host::LocaleSensitiveCompare(std::string_view lhs, std::string_view rhs)
     return lhs.compare(rhs);
 }
 
-// OSD toggle helpers — apply immediately via EmuConfig.GS then push to MTGS
+// OSD toggle helpers. The perf-overlay renderer reads the LIVE GSConfig every
+// frame; the canonical sync (EmuConfig.GS -> GSConfig) only happens inside
+// MTGS::ApplySettings, which DEFERS the copy to the GS thread and is skipped
+// entirely when MTGS isn't open. That meant an OSD toggle could land in
+// EmuConfig yet never reach GSConfig, so the on-screen display appeared to
+// ignore the switch. Copy the OSD fields straight into GSConfig here (plain
+// bools/ints — a torn cross-thread read is impossible), so the change is
+// immediate and reliable, then still run the MTGS reconfigure for the rest.
 static void applyOsdSetting()
 {
+    GSConfig.OsdShowSpeed = EmuConfig.GS.OsdShowSpeed;
+    GSConfig.OsdShowFPS = EmuConfig.GS.OsdShowFPS;
+    GSConfig.OsdShowVPS = EmuConfig.GS.OsdShowVPS;
+    GSConfig.OsdShowCPU = EmuConfig.GS.OsdShowCPU;
+    GSConfig.OsdShowGPU = EmuConfig.GS.OsdShowGPU;
+    GSConfig.OsdShowResolution = EmuConfig.GS.OsdShowResolution;
+    GSConfig.OsdShowGSStats = EmuConfig.GS.OsdShowGSStats;
+    GSConfig.OsdShowFrameTimes = EmuConfig.GS.OsdShowFrameTimes;
+    GSConfig.OsdShowHardwareInfo = EmuConfig.GS.OsdShowHardwareInfo;
+    GSConfig.OsdShowGPUStats = EmuConfig.GS.OsdShowGPUStats;
+    GSConfig.OsdShowVersion = EmuConfig.GS.OsdShowVersion;
+    GSConfig.OsdShowSettings = EmuConfig.GS.OsdShowSettings;
+    GSConfig.OsdShowInputs = EmuConfig.GS.OsdShowInputs;
+    GSConfig.OsdMessagesPos = EmuConfig.GS.OsdMessagesPos;
+    GSConfig.OsdScale = EmuConfig.GS.OsdScale;
     if (MTGS::IsOpen())
         MTGS::ApplySettings();
 }

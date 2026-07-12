@@ -6,8 +6,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import com.armsx2.Main
+import com.armsx2.runtime.MainActivityRuntime
 import org.json.JSONObject
+import androidx.core.content.edit
 
 /**
  * Live UI localization.
@@ -33,8 +34,11 @@ data class AppLanguage(
 )
 
 object I18n {
-    /** English first (source of truth), then the machine-translated set. */
+    const val SYSTEM_CODE = "system"
+
+    /** System default first, then English (source of truth) and translations. */
     val languages: List<AppLanguage> = listOf(
+        AppLanguage(SYSTEM_CODE, "System", "System"),
         AppLanguage("en", "English", "English"),
         AppLanguage("es", "Spanish", "Español"),
         AppLanguage("pt-BR", "Portuguese (Brazil)", "Português (Brasil)"),
@@ -42,6 +46,8 @@ object I18n {
         AppLanguage("de", "German", "Deutsch"),
         AppLanguage("it", "Italian", "Italiano"),
         AppLanguage("ru", "Russian", "Русский"),
+        AppLanguage("uk", "Ukrainian", "Українська"),
+        AppLanguage("ku", "Kurdish", "Kurdî"),
         AppLanguage("pl", "Polish", "Polski"),
         AppLanguage("tr", "Turkish", "Türkçe"),
         AppLanguage("ja", "Japanese", "日本語"),
@@ -52,6 +58,7 @@ object I18n {
         AppLanguage("id", "Indonesian", "Indonesia"),
         AppLanguage("vi", "Vietnamese", "Tiếng Việt"),
         AppLanguage("th", "Thai", "ไทย"),
+        AppLanguage("fa", "Persian", "فارسی", rtl = true),
     )
 
     private const val PREF_KEY = "ui.language"
@@ -60,22 +67,54 @@ object I18n {
     var current by mutableStateOf("en")
         private set
 
+    /** Picker selection. `system` resolves to an actual [current] language. */
+    var selected by mutableStateOf(SYSTEM_CODE)
+        private set
+
     /** code → (key → translated text). English is never stored here (it lives in [EN]). */
     private val tables = HashMap<String, Map<String, String>>()
 
-    /** Call once at startup (after Main.prefs is ready). Restores the saved language. */
+    /** Call once at startup (after MainActivityRuntime.prefs is ready). Restores the saved language. */
     fun init(context: Context) {
-        val saved = runCatching { Main.prefs.getString(PREF_KEY, null) }.getOrNull()
-        val code = if (saved != null && languages.any { it.code == saved }) saved else "en"
-        if (code != "en") ensureLoaded(context, code)
-        current = code
+        val saved = runCatching { MainActivityRuntime.prefs.getString(PREF_KEY, null) }.getOrNull()
+        val selection = if (saved != null && languages.any { it.code == saved }) saved else SYSTEM_CODE
+        applySelection(context, selection)
     }
 
     /** Switch language live + persist. Loads the JSON if not already cached. */
     fun setLanguage(context: Context, code: String) {
+        if (languages.none { it.code == code }) return
+        applySelection(context, code)
+        runCatching { MainActivityRuntime.prefs.edit { putString(PREF_KEY, code) } }
+    }
+
+    /** Re-resolve only when the picker is following the device language. */
+    fun refreshSystemLanguage(context: Context) {
+        if (selected == SYSTEM_CODE) applySelection(context, SYSTEM_CODE)
+    }
+
+    private fun applySelection(context: Context, selection: String) {
+        val code = if (selection == SYSTEM_CODE) resolveSystemLanguage(context) else selection
         if (code != "en") ensureLoaded(context, code)
+        selected = selection
         current = code
-        runCatching { Main.prefs.edit().putString(PREF_KEY, code).apply() }
+    }
+
+    private fun resolveSystemLanguage(context: Context): String {
+        val locale = context.resources.configuration.locales[0] ?: return "en"
+        val supported = languages.filterNot { it.code == SYSTEM_CODE }
+        supported.firstOrNull { it.code.equals(locale.toLanguageTag(), ignoreCase = true) }?.let { return it.code }
+
+        if (locale.language.equals("zh", ignoreCase = true)) {
+            val traditional = locale.script.equals("Hant", ignoreCase = true) ||
+                locale.country.uppercase() in setOf("TW", "HK", "MO")
+            return if (traditional) "zh-TW" else "zh-CN"
+        }
+        if (locale.language.equals("pt", ignoreCase = true)) return "pt-BR"
+
+        return supported.firstOrNull {
+            it.code.substringBefore('-').equals(locale.language, ignoreCase = true)
+        }?.code ?: "en"
     }
 
     private fun ensureLoaded(context: Context, code: String) {
@@ -121,8 +160,44 @@ fun str(key: String): String {
  * renaming a key orphans it in every translation JSON.
  */
 val EN: Map<String, String> = mapOf(
+    "about.title" to "About app",
+    "about.tagline" to "Fast, modern PlayStation 2 emulation for Android.",
+    "about.appVersion" to "App version",
+    "about.coreVersion" to "Emulator version",
+    "about.device" to "Device",
+    "about.androidVersion" to "Android version",
+    "about.repository.title" to "GitHub repository",
+    "about.repository.description" to "Open the source code, releases, and issue tracker.",
+    "about.build.title" to "Build information",
+    "about.hardware.title" to "Device information",
+    "about.soc" to "Chipset",
+    "about.gpu" to "GPU",
+    "about.cpuCores" to "CPU cores",
+    "about.memory" to "Memory",
+    "about.display" to "Display",
+    "about.architecture" to "Architecture",
+    "about.pageSize" to "Memory page",
+    "about.pcsx2.title" to "PCSX2 project",
+    "about.pcsx2.description" to "ARMSX2 is built on the open-source PCSX2 emulator.",
     // --- settings tabs ---
     "tab.app" to "App",
+    "tab.info" to "Info",
+    "info.noGame.title" to "No game selected",
+    "info.noGame.body" to "Open this from a game's settings to see its details.",
+    "info.title" to "Name",
+    "info.serial" to "Serial",
+    "info.crc" to "CRC",
+    "info.cover.label" to "Custom cover art",
+    "info.setCover" to "Set cover",
+    "info.changeCover" to "Change cover",
+    "info.removeCover" to "Remove cover",
+    "info.exportSettings" to "Export settings",
+    "info.importSettings" to "Import settings",
+    "info.region" to "Region",
+    "info.container" to "Container",
+    "info.platform" to "Platform",
+    "info.compatibility" to "Compatibility",
+    "info.path" to "Path",
     "tab.performance" to "Performance",
     "tab.renderer" to "Renderer",
     "tab.fixes" to "Fixes",
@@ -137,11 +212,26 @@ val EN: Map<String, String> = mapOf(
     // --- App tab / language ---
     "app.language" to "Language",
     "app.language.desc" to "Choose the app language. Applies instantly.",
+    "app.language.system" to "System language",
     "app.language.machineNote" to "Translations except English are machine-translated. Spot a bad one? Let us know and we'll fix it.",
+    "app.library.search" to "Library search",
+    "app.library.search.desc" to "Show the game search field on the library home screen.",
+    "app.library.recents" to "Recently played games",
+    "app.library.recents.desc" to "Show the Recently Played section on the library home screen.",
+    "app.theme" to "Theme",
+    "app.theme.system" to "System",
+    "app.theme.light" to "Light",
+    "app.theme.dark" to "Dark",
+    "app.bootLogo" to "Boot animation",
+    "app.bootLogo.desc" to "Play the ARMSX2 intro video when the app starts.",
+    "app.toolbarPosition" to "Library toolbar",
+    "app.toolbarPosition.top" to "Top",
+    "app.toolbarPosition.bottom" to "Bottom",
     // --- common actions ---
     "action.play" to "Play",
     "action.resume" to "Resume",
     "action.settings" to "Settings",
+    "action.allSettings" to "All Settings",
     "action.back" to "Back",
     "action.cancel" to "Cancel",
     "action.ok" to "OK",
@@ -150,6 +240,7 @@ val EN: Map<String, String> = mapOf(
     "action.reset" to "Reset",
     "action.apply" to "Apply",
     "action.import" to "Import",
+    "action.importFolder" to "Import Folder",
     "action.export" to "Export",
     "action.search" to "Search",
     "action.close" to "Close",
@@ -187,6 +278,15 @@ val EN: Map<String, String> = mapOf(
     "backend.applyRestart" to "Apply & Restart",
     "backend.driver.active" to "Active",
     "backend.driver.browseOnline" to "Browse online",
+    "backend.driver.download" to "Download",
+    "backend.driver.hideDownloads" to "Hide downloads",
+    "backend.driver.import" to "Import",
+    "backend.driver.get" to "Get",
+    "backend.driver.fetching" to "Fetching…",
+    "backend.driver.none" to "No drivers found",
+    "backend.driver.installedOk" to "Installed",
+    "backend.driver.downloadFailed" to "Download failed",
+    "backend.driver.importFailed" to "Import failed",
     "backend.driver.default" to "Default",
     "backend.driver.fetchError" to "Couldn't reach github.com/K11MCH1/AdrenoToolsDrivers. Check your connection and try again.",
     "backend.driver.hideOnline" to "Hide online",
@@ -285,6 +385,7 @@ val EN: Map<String, String> = mapOf(
     "fixes.opt.special" to "Special",
     "fixes.opt.sprite" to "Sprite",
     "fixes.opt.sprites" to "Sprites",
+    "fixes.opt.force32" to "Force 32bit",
     "fixes.opt.triangle" to "Triangle",
     "fixes.opt.unscaled" to "Unscaled",
     "fixes.opt.upper" to "Upper",
@@ -357,7 +458,12 @@ val EN: Map<String, String> = mapOf(
     "games.info.perGameSettings.title" to "Per-game settings",
     "games.info.tapToClose" to "Tap anywhere or press B to close",
     "games.info.title" to "Library Help",
+    "games.library.totalGames" to "Total games",
     "games.nav.library" to "LIBRARY",
+    "games.overflow.coverStyle" to "Cover style",
+    "games.overflow.openNavigation" to "Open navigation",
+    "games.overflow.sortRecent" to "Sort by recently played",
+    "games.overflow.sortTitle" to "Sort by title",
     "games.noCover" to "No cover",
     "games.noSerial" to "No serial",
     "games.scanningRoms" to "Scanning ROMs…",
@@ -365,6 +471,7 @@ val EN: Map<String, String> = mapOf(
     "games.search.placeholder" to "Search games…",
     "games.section.library" to "Library",
     "games.section.recentlyPlayed" to "Recently Played",
+    "games.section.allGames" to "All Games",
     "games.toast.backgroundImportFailed" to "Could not import background",
     "games.toast.backgroundImported" to "Library background imported",
     "games.toast.backgroundReset" to "Library background reset",
@@ -387,6 +494,9 @@ val EN: Map<String, String> = mapOf(
     "games.toolbar.recent" to "Recent",
     "games.toolbar.resetBg" to "Reset BG",
     "games.toolbar.rows" to "Rows",
+    "games.toolbar.covers3d" to "3D covers",
+    "games.background.choose" to "Choose background image…",
+    "games.background.clear" to "Clear background",
     "games.toolbar.scan" to "Scan",
     "games.toolbar.search" to "Search",
     "games.toolbar.setup" to "Setup",
@@ -424,6 +534,8 @@ val EN: Map<String, String> = mapOf(
     "memcard.size.label" to "Size",
     "memcard.slot1" to "Slot 1",
     "memcard.slot1.active" to "✓ Slot 1",
+    "memcard.thisGame" to "This game",
+    "memcard.thisGame.active" to "✓ This game",
     "memcard.slot2" to "Slot 2",
     "memcard.slot2.active" to "✓ Slot 2",
     "memcard.status.coreStarting" to "Core settings are still starting up.",
@@ -476,6 +588,8 @@ val EN: Map<String, String> = mapOf(
     "overlay.toggle.emulatorVersion" to "Emulator version",
     "overlay.toggle.fastForwardPopups" to "Fast-Forward pop-ups",
     "overlay.toggle.fps" to "FPS",
+    "overlay.master.label" to "On-screen display",
+    "overlay.simple.label" to "Simple OSD (FPS only)",
     "overlay.toggle.frameTimesGraph" to "Frame times graph",
     "overlay.toggle.gpuPipelineStats" to "GPU pipeline stats (VSI/PSI, Vulkan only)",
     "overlay.toggle.gpuUsage" to "GPU usage (saves perf when off)",
@@ -496,6 +610,8 @@ val EN: Map<String, String> = mapOf(
     "pad.dpadAsLeftStick.description" to "Make the physical D-pad drive the left analog stick (full deflection) so it works in games that only read the analog stick. The D-pad stops sending digital presses while this is on.",
     "pad.dpadAsLeftStick.label" to "D-pad acts as Left Stick",
     "pad.editTouchLayout" to "Edit On-Screen Touch Layout",
+    "pad.controllerMapping" to "Controller mapping",
+    "perf.frameLimit.label" to "Frame limit",
     "pad.editing.description" to "Configure Player 1 or Player 2's button mapping. Player 2 = the 2nd controller that joins in-game.",
     "pad.editing.label" to "Editing",
     "pad.instruction.tapThenPress" to "Tap an action, then press a physical controller button.",
@@ -586,10 +702,15 @@ val EN: Map<String, String> = mapOf(
     "patches.field.name" to "Name",
     "patches.field.pnachLines" to "PNACH patch= lines",
     "patches.hardcoreNoticeCheatsDisabled" to "Cheats are disabled while RetroAchievements Hardcore mode is active. Patches still apply.",
-    "patches.hostFs.description" to "Lets the game read files from the host: namespace — needed for some ELF / homebrew ",
+    "patches.hostFs.description" to "Lets the game read files from the host: namespace — needed for some ELF / homebrew and advanced mods.",
     "patches.hostFs.label" to "HostFS (host: filesystem)",
     "patches.installedFilesHint" to "Installed files (including cheats you copied into the cheats folder). ",
     "patches.installedHeader" to "Installed patches & cheats (.pnach)",
+    "patches.local.noCheats" to "No individually-labelled cheats in this file.",
+    "patches.online.header" to "Browse online",
+    "patches.online.fetch" to "Find patches & cheats for this game",
+    "patches.online.loading" to "Searching the community repos…",
+    "patches.online.install" to "Install selected",
     "patches.noFilesInstalled" to "No patch or cheat files installed yet.",
     "patches.noInterlacing.label" to "No-Interlacing Patches",
     "patches.pasteImportHint" to "Paste/import PCSX2 PNACH patch= lines. Hardcore achievements disables cheats.",
@@ -688,11 +809,24 @@ val EN: Map<String, String> = mapOf(
     "ra.mode.casual" to "CASUAL",
     "ra.mode.hardcore" to "HARDCORE",
     "ra.options.header" to "Options",
+    "ra.title" to "RetroAchievements",
+    "ra.viewAchievements" to "Achievements & Options",
+    "ra.hardcore.enable.title" to "Enable hardcore mode?",
+    "ra.hardcore.enable.body" to "This restarts the game now and turns off save states, cheats, and speed changes. Achievements you earn will count for hardcore.",
+    "ra.hardcore.enable.confirm" to "Enable & Restart",
+    "ra.hardcore.disable.title" to "Switch to casual mode?",
+    "ra.hardcore.disable.body" to "Save states and cheats become available again, but new unlocks won't count as hardcore until you re-enable it.",
+    "ra.hardcore.disable.confirm" to "Switch to Casual",
     "ra.options.inGameIndicators" to "In-Game Indicators",
+    "ra.options.inGameIndicators.desc" to "On-screen indicators for challenge and measured-progress achievements.",
     "ra.options.leaderboardNotifications" to "Leaderboard Notifications",
+    "ra.options.leaderboardNotifications.desc" to "Announce when you start or submit a leaderboard entry.",
     "ra.options.leaderboardTrackers" to "Leaderboard Trackers",
+    "ra.options.leaderboardTrackers.desc" to "Live trackers while a leaderboard attempt is active.",
     "ra.options.soundEffects" to "Sound Effects",
+    "ra.options.soundEffects.desc" to "Play a sound when an achievement unlocks.",
     "ra.options.unlockNotifications" to "Unlock Notifications",
+    "ra.options.unlockNotifications.desc" to "Show a popup when you unlock an achievement.",
     "ra.status.loading.body" to "Fetching achievement list.",
     "ra.status.loading.title" to "Loading…",
     "ra.status.noAchievements.body" to "This game has no RetroAchievements set, or the title isn't recognised.",
@@ -730,6 +864,13 @@ val EN: Map<String, String> = mapOf(
     "renderer.clearShaderCache.description" to "Wipes the compiled Vulkan + GL shader/pipeline caches. Use if a game renders corrupt after a driver swap or update — the next launch rebuilds them clean.",
     "renderer.clearShaderCache.label" to "Clear Shader Cache",
     "renderer.contrast.label" to "Contrast",
+    "renderer.cas.description" to "AMD FidelityFX Contrast-Adaptive Sharpening — crisps up the image.",
+    "renderer.cas.label" to "CAS Sharpening",
+    "renderer.cas.sharpen" to "Sharpen",
+    "renderer.cas.sharpenResize" to "Sharpen + Resize",
+    "renderer.cas.sharpness.label" to "CAS Sharpness",
+    "renderer.fxaa.description" to "Fast post-process anti-aliasing — smooths jagged edges with a light blur.",
+    "renderer.fxaa.label" to "FXAA",
     "renderer.deinterlacing.description" to "Changes how interlaced video is displayed. Auto is safest.",
     "renderer.deinterlacing.label" to "Deinterlacing",
     "renderer.displayFilter.description" to "Bilinear filter for the final image scaled to your screen. Smooth softens edges, Sharp keeps them crisp, Nearest is raw pixels.",
@@ -798,6 +939,8 @@ val EN: Map<String, String> = mapOf(
     "savestate.autosave.screenshotDesc" to "Autosave screenshot",
     "savestate.autosave.title" to "Autosave",
     "savestate.backup" to "Backup",
+    "savestate.empty.description" to "Create a save state while a game is running, then manage or back it up here.",
+    "savestate.empty.title" to "No save states yet",
     "savestate.noBackupFound" to "No backup found",
     "savestate.noSavesToBackUp" to "No saves to back up",
     "savestate.restore" to "Restore",
@@ -809,6 +952,7 @@ val EN: Map<String, String> = mapOf(
     "setup.aspect.auto" to "Auto",
     "setup.aspect.stretch" to "Stretch",
     "setup.bios.error.noneFound" to "No valid PS2 BIOS files found in that folder.",
+    "setup.bios.multipleFound" to "BIOS files ready — switch anytime in BIOS settings.",
     "setup.bios.noneSelected" to "No BIOS folder selected yet — use the Pick BIOS Folder button below.",
     "setup.bios.scanning" to "Scanning…",
     "setup.bios.selectTitle" to "Select BIOS",
@@ -876,7 +1020,7 @@ val EN: Map<String, String> = mapOf(
     "setup.step.appData.description.allFiles" to "Where memory cards, save states, and configs are stored. Choose Internal, an SD card, or a custom folder. (Game ROMs are added separately.)",
     "setup.step.appData.description.play" to "Where memory cards, save states, and configs are stored. Internal uses your main device storage; SD Card uses a memory card if one is present. (Game ROMs are added separately.)",
     "setup.step.appData.title" to "App Data Folder",
-    "setup.step.bios.description" to "Select a PS2 BIOS file to start playing your games.",
+    "setup.step.bios.description" to "Pick a folder of PS2 BIOS files to start playing — every BIOS inside is added.",
     "setup.step.bios.title" to "BIOS Location",
     "setup.step.rom.description" to "Pick one or more folders where you keep your PS2 games. Supports ISO, CHD, BIN, IMG, MDF, and GZ.",
     "setup.step.rom.title" to "ROM Location",
@@ -884,6 +1028,8 @@ val EN: Map<String, String> = mapOf(
     "setup.storageChooser.description" to "Internal lives in app-private storage (wiped on uninstall). SD Card creates ",
     "setup.storageChooser.grantAllFiles" to "Grant All-Files Access…",
     "setup.storageChooser.internal" to "Internal (app-private)",
+    "setup.storageChooser.customShort" to "Custom folder",
+    "setup.storageChooser.customSubtitle" to "Pick any folder (grants all-files access)",
     "setup.storageChooser.internalShort" to "Internal",
     "setup.storageChooser.title" to "App data location",
     "setup.systemDir.appPrivateSubtitle" to "App-private Android/data folder",

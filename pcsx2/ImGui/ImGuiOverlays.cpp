@@ -198,6 +198,19 @@ __ri void ImGuiManager::FormatProcessorStat(SmallStringBase& text, double usage,
 
 __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, float margin, float spacing)
 {
+	// The perf-OSD flags in GSConfig are refreshed from the authoritative EmuConfig.GS at
+	// the top of RenderOverlays (see the note there). When every perf line is off, draw
+	// nothing and return BEFORE any draw call, so a line string cached before a pause can't
+	// linger on screen (the rebuild block below is skipped while the VM is paused, which is
+	// why toggling in the menu looked inert).
+	if (!GSConfig.OsdShowFPS && !GSConfig.OsdShowVPS && !GSConfig.OsdShowSpeed &&
+		!GSConfig.OsdShowResolution && !GSConfig.OsdShowCPU && !GSConfig.OsdShowGPU &&
+		!GSConfig.OsdShowGSStats && !GSConfig.OsdShowFrameTimes && !GSConfig.OsdShowHardwareInfo &&
+		!GSConfig.OsdShowVersion && !GSConfig.OsdShowGPUStats)
+	{
+		return;
+	}
+
 	const float shadow_offset = std::ceil(scale);
 
 	ImFont* const osd_font = ImGuiManager::GetOSDFont();
@@ -1840,6 +1853,27 @@ void SaveStateSelectorUI::ShowSlotOSDMessage()
 
 void ImGuiManager::RenderOverlays()
 {
+	// Android: the live GSConfig can be stale — the GS device reopens whenever the
+	// pause/overlay releases the render surface, and GSopen re-derives GSConfig from a
+	// config whose canonical struct defaults every OsdShow* ON, so an OSD the user turned
+	// off silently came back. EmuConfig.GS is the authoritative, INI-backed config the
+	// on-screen toggles actually write, so mirror every perf / settings-summary / inputs
+	// OSD flag from it here, once, before any overlay draws — the perf, settings and
+	// inputs overlays all then honour their switches reliably.
+	GSConfig.OsdShowFPS = EmuConfig.GS.OsdShowFPS;
+	GSConfig.OsdShowVPS = EmuConfig.GS.OsdShowVPS;
+	GSConfig.OsdShowSpeed = EmuConfig.GS.OsdShowSpeed;
+	GSConfig.OsdShowResolution = EmuConfig.GS.OsdShowResolution;
+	GSConfig.OsdShowCPU = EmuConfig.GS.OsdShowCPU;
+	GSConfig.OsdShowGPU = EmuConfig.GS.OsdShowGPU;
+	GSConfig.OsdShowGSStats = EmuConfig.GS.OsdShowGSStats;
+	GSConfig.OsdShowFrameTimes = EmuConfig.GS.OsdShowFrameTimes;
+	GSConfig.OsdShowHardwareInfo = EmuConfig.GS.OsdShowHardwareInfo;
+	GSConfig.OsdShowVersion = EmuConfig.GS.OsdShowVersion;
+	GSConfig.OsdShowGPUStats = EmuConfig.GS.OsdShowGPUStats;
+	GSConfig.OsdShowSettings = EmuConfig.GS.OsdShowSettings;
+	GSConfig.OsdShowInputs = EmuConfig.GS.OsdShowInputs;
+
 	const float scale = ImGuiManager::GetGlobalScale();
 	const float margin = std::ceil(GSConfig.OsdMargin * scale);
 	const float spacing = std::ceil(5.0f * scale);

@@ -977,6 +977,28 @@ bool GSDeviceOGL::CheckFeatures()
 		m_features.depth_feedback |= GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::Auto;
 	}
 
+	// ARMSX2 (Adreno GLES only; inert on every other GPU/profile). Adreno's driver
+	// rejects a fragment shader declaring TWO framebuffer-fetch `inout` outputs (o_col0
+	// colour + o_col1 depth), which the depth-as-colour SW-Z path emits for accurate-
+	// alpha-test draws -> link failure -> garbage (Everybody's Golf 4 / Minna no Golf 4).
+	// Route depth feedback through the depth path (a single fetch output) so it links, and
+	// read prior depth via the coherent ARM depth-stencil fetch (gl_LastFragDepthARM) when
+	// available -- the mode-1 depth sampler read is incoherent on GLES (no barrier on a
+	// sampled depth attachment) and makes occluded triangles poke through as white shards.
+	// Only overrides Auto; an explicit DepthFeedbackMode choice is honoured. The GPU
+	// profile is already resolved above (SetRuntimeGPUProfile), so IsAdrenoGPUProfile()
+	// is valid here.
+	if (m_features.framebuffer_fetch && IsAdrenoGPUProfile() &&
+		GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::Auto)
+	{
+		m_features.depth_feedback = true;
+		m_arm_depth_fetch = GLAD_GL_ARM_shader_framebuffer_fetch_depth_stencil;
+		Console.WriteLn(m_arm_depth_fetch
+			? "GL: Adreno - depth feedback via coherent ARM depth-stencil fetch (gl_LastFragDepthARM)."
+			: "GL: Adreno - routing depth feedback through the depth sampler "
+			  "(avoids the dual framebuffer-fetch output link failure).");
+	}
+
 	// Mobile tile-based GPU profiles. Both Mali and Adreno prefer fresh
 	// textures over reused ones (avoids tile-flush stalls on partial
 	// writes), so the texture-pool hint is shared. Mali additionally
@@ -1308,8 +1330,9 @@ GSDevice::PresentResult GSDeviceOGL::BeginPresent(bool frame_skip)
 	// before the tile is loaded for the present quad. The color attachment is
 	// fully overwritten by the clear+blit below, and depth/stencil are never
 	// used at all on the system framebuffer. Default-FBO uses GL_COLOR / DEPTH
-	// / STENCIL (not GL_*_ATTACHMENT). Same gate as CommitClear.
-	if (GLAD_GL_VERSION_4_3 || m_is_gles)
+	// / STENCIL (not GL_*_ATTACHMENT). Pure TBDR tile-bandwidth win and inert on
+	// desktop immediate renderers, so gated to GLES to keep the desktop path canonical.
+	if (m_is_gles)
 	{
 		const GLenum attachments[] = {GL_COLOR, GL_DEPTH, GL_STENCIL};
 		glInvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, std::size(attachments), attachments);
@@ -1337,8 +1360,8 @@ void GSDeviceOGL::EndPresent()
 	// Discard the default framebuffer's depth/stencil before the swap. We
 	// never wrote anything meaningful to them, so on TBDR drivers writing
 	// the tile back to system memory at SwapBuffers is wasted bandwidth.
-	// Color is preserved (it's what gets presented).
-	if (GLAD_GL_VERSION_4_3 || m_is_gles)
+	// Color is preserved (it's what gets presented). GLES/TBDR-only (inert on desktop).
+	if (m_is_gles)
 	{
 		const GLenum attachments[] = {GL_DEPTH, GL_STENCIL};
 		glInvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, std::size(attachments), attachments);
@@ -1894,6 +1917,7 @@ std::string GSDeviceOGL::GenGlslHeader(const std::string_view entry, GLenum type
 	header += fmt::format("#define GPU_PROFILE_MALI {}\n", IsMaliGPUProfile() ? 1 : 0);
 	header += fmt::format("#define GPU_PROFILE_ADRENO {}\n", IsAdrenoGPUProfile() ? 1 : 0);
 	header += fmt::format("#define GPU_PROFILE_POWERVR {}\n", IsPowerVRGPUProfile() ? 1 : 0);
+	header += fmt::format("#define HAS_ARM_DEPTH_FETCH {}\n", m_arm_depth_fetch ? 1 : 0);
 
 	if (GLAD_GL_ARB_conservative_depth)
 	{
@@ -2914,7 +2938,7 @@ void GSDeviceOGL::RenderBlankFrame()
 {
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 	glDisable(GL_SCISSOR_TEST);
-	if (GLAD_GL_VERSION_4_3 || m_is_gles)
+	if (m_is_gles) // GLES/TBDR-only tile-bandwidth hint; inert on desktop, gated to keep it canonical
 	{
 		const GLenum pre[] = {GL_COLOR, GL_DEPTH, GL_STENCIL};
 		glInvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, std::size(pre), pre);

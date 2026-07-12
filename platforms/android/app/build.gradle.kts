@@ -1,3 +1,4 @@
+@file:Suppress("UnstableApiUsage", "DEPRECATION")
 import org.gradle.api.GradleException
 import java.util.Properties
 
@@ -11,8 +12,6 @@ val armsx2Pgo = providers.gradleProperty("armsx2.pgo").orElse("none") // none | 
 val armsx2PgoProfile = providers.gradleProperty("armsx2.pgoProfile").orElse("") // abs path to merged .profdata (optimize)
 val armsx2HostPageSize = providers.gradleProperty("armsx2.hostPageSize").orElse("0x1000")
 val armsx2ApplicationId = providers.gradleProperty("armsx2.applicationId").orElse("com.armsx2")
-val armsx2VersionCode = providers.gradleProperty("armsx2.versionCode").map { it.toInt() }.orElse(17)
-val armsx2VersionName = providers.gradleProperty("armsx2.versionName").orElse("1.0-overlay-3")
 val armsx2SigningPropertiesFile = rootProject.file("armsx2_keystore.properties")
 val armsx2SigningProperties = Properties().apply {
     if (armsx2SigningPropertiesFile.isFile) {
@@ -29,18 +28,14 @@ if (armsx2SigningPropertiesFile.isFile && !armsx2PlaySigningReady) {
 
 android {
     namespace = "com.armsx2"
-    compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
-    }
+    compileSdk = 37
 
     defaultConfig {
         applicationId = armsx2ApplicationId.get()
         minSdk = 26
-        targetSdk = 36
-        versionCode = armsx2VersionCode.get()
-        versionName = armsx2VersionName.get()
+        targetSdk = 37
+        versionCode = providers.gradleProperty("armsx2.versionCode").orNull?.toInt() ?: 1088
+        versionName = providers.gradleProperty("armsx2.versionName").orNull ?: "2.5.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
@@ -59,7 +54,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             // Sign release with the debug keystore so it's installable on-device
             // without a separate signing config. NOT for distribution — the debug
             // keystore is well-known and not secure for Play Store uploads.
@@ -73,7 +69,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            externalNativeBuild {
+            if (true) externalNativeBuild {
                 cmake {
                     arguments += "-DANDROID=true"
                     arguments += "-DANDROID_STL=c++_static"
@@ -146,9 +142,14 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+    // NATIVE BUILD DISABLED for the recovered tree: the prebuilt native .so files
+    // (extracted from vc1063 into src/main/jniLibs/arm64-v8a) are packaged directly,
+    // so UI/Kotlin iteration doesn't require recompiling the C++ core. Re-enable this
+    // block (and the per-buildType cmake blocks above) to rebuild native from source.
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
     buildFeatures {
@@ -169,6 +170,12 @@ android {
             useLegacyPackaging = true
         }
     }
+}
+
+composeCompiler {
+    // Keep R8 enabled while avoiding AGP's incompatible built-in Kotlin
+    // compose-group-mapping producer. Source/line mappings remain preserved.
+    includeComposeMappingFile.set(false)
 }
 
 // Android Studio's "Build > Clean Project" runs the `clean` task, but AGP
@@ -201,6 +208,8 @@ dependencies {
     implementation(libs.androidx.documentfile)
     implementation(libs.coil.compose)
     implementation(libs.coil.gif) // animated GIF / WebP / APNG (library background)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
