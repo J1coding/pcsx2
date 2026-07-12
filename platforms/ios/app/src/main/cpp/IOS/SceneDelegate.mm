@@ -670,12 +670,14 @@ static void ARMSX2StartJITKeepalive()
         Console.WriteLn("@@JIT_GATE@@ JIT channel available; starting VM");
         DarwinMisc::iPSX2_FORCE_EE_INTERP = 0;
         // Restore recompiler settings if we previously forced interpreter.
-        // EnableFastmem is intentionally left to the pre-VM-sync logic, which
-        // re-applies the sticky fastmem-area-unavailable disable.
+        // Restore fastmem too (it was disabled during interpreter fallback).
+        // The sticky vtlb_FastmemAreaUnavailable() check in the pre-VM-sync logic
+        // will re-disable it if the 4GB reservation can't be made.
         s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableEE", true);
         s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableIOP", true);
         s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU0", true);
         s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", true);
+        s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableFastmem", true);
         s_settings_interface->Save();
         [self startVMThread];
         return;
@@ -869,6 +871,11 @@ static void ARMSX2StartJITKeepalive()
                         std::fprintf(stderr, "@@BOOT_THREAD_EXIT@@ reason=should_exit\n");
                         std::fflush(stderr);
                         Console.WriteLn("[VM] VM Thread: exit requested, ending persistent loop.");
+                        // The persistent-thread design assumes CPUThreadInitialize runs once.
+                        // When we tear down to create a new thread (e.g. for interpreter fallback),
+                        // we must pair the init with a shutdown so the new thread can re-allocate
+                        // without duplicating the ~161MB SysMemory reservation.
+                        VMManager::Internal::CPUThreadShutdown();
                         break; // exit the while(true) loop — thread ends
                     }
                 }

@@ -1038,6 +1038,10 @@ void* DarwinMisc::MmapCodeDualMap(size_t size)
 			}
 			// else: universal completed but failed (sigtrap) — brk_ok stays false
 		}
+		// NOTE: If the Universal TXM worker (detached, possibly hung) traps late
+		// after the Legacy fallback, it may hit the handler after restoration.
+		// This race is bounded: it only occurs with Universal protocol + hang +
+		// late trap. ARMSX2_JIT_PROTOCOL=legacy avoids the Universal path entirely.
 		sigaction(SIGTRAP, &sa_brk_old, nullptr);
 
 		if (!brk_ok)
