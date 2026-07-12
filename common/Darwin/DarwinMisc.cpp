@@ -738,6 +738,44 @@ bool DarwinMisc::IsJITAvailable()
 #endif
 }
 
+bool DarwinMisc::ValidateJITAlive()
+{
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+	// Check 1: CS_DEBUGGED still set?
+	u32 cs_flags = 0;
+	const int rv = csops(getpid(), 0, &cs_flags, sizeof(cs_flags));
+	const bool cs_debugged = (rv == 0) && ((cs_flags & 0x10000000u) != 0);
+	if (!cs_debugged)
+	{
+		std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=cs_debugged_revoked\n");
+		std::fflush(stderr);
+		return false;
+	}
+
+	// Check 2: RW alias still writable? Write a canary, read it back.
+	if (g_code_rw_base != 0 && g_code_rw_size > 0)
+	{
+		volatile u8* canary = reinterpret_cast<volatile u8*>(g_code_rw_base);
+		const u8 saved = *canary;
+		*canary = 0x42;
+		const u8 readback = *canary;
+		*canary = saved; // restore so we don't corrupt the first code byte
+		if (readback != 0x42)
+		{
+			std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=rw_alias_dead readback=0x%02x\n", readback);
+			std::fflush(stderr);
+			return false;
+		}
+	}
+
+	std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=1 cs_debugged=1 canary=ok\n");
+	std::fflush(stderr);
+	return true;
+#else
+	return true; // macOS and Simulator always have JIT
+#endif
+}
+
 DarwinMisc::JitMode DarwinMisc::DetectJitMode()
 {
 #if TARGET_OS_SIMULATOR
