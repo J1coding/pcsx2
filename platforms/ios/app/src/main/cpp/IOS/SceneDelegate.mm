@@ -608,6 +608,14 @@
 static dispatch_source_t s_jitKeepaliveTimer = nil;
 static std::atomic<bool> s_jitExpired{false};
 
+// VM init watchdog (Component 4a) and re-boot thread-exit signal (Component 5).
+// s_vmInitComplete is reset to false before CPUThreadInitialize and set to true
+// once it returns; the watchdog thread polls it for 15 seconds.
+// s_vmThreadShouldExit wakes the persistent boot loop so it can exit cleanly
+// when revalidation decides to tear the old thread down and create a new one.
+static std::atomic<bool> s_vmInitComplete{false};
+static std::atomic<bool> s_vmThreadShouldExit{false};
+
 static void ARMSX2StopJITKeepalive()
 {
     if (s_jitKeepaliveTimer)
@@ -713,11 +721,44 @@ static void ARMSX2StartJITKeepalive()
         s_requestVMStop.store(false);
 
         if (s_vmThreadCreated) {
-            std::fprintf(stderr, "@@BOOT_START_THREAD@@ active=0 created=1 action=signal\n");
-            std::fflush(stderr);
-            Console.WriteLn("[VM] startVMThread: signaling existing VM thread");
-            s_vmCV.notify_one();
-            return;
+            // Re-validate JIT before signaling the existing thread.
+            // The persistent thread bypasses CPUThreadInitialize, so it reuses
+            // the JIT memory allocated at first boot. If iOS revoked the grant,
+            // that memory is dead and the recompiler would write into a void.
+            if (!DarwinMisc::iPSX2_FORCE_EE_INTERP && !DarwinMisc::ValidateJITAlive())
+            {
+                std::fprintf(stderr, "@@BOOT_JIT_GATE@@ revalidate=0 fallback=interpreter\n");
+                std::fflush(stderr);
+                DarwinMisc::iPSX2_FORCE_EE_INTERP = 1;
+                s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableEE", false);
+                s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableIOP", false);
+                s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU0", false);
+                s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", false);
+                s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableFastmem", false);
+                s_settings_interface->Save();
+
+                Host::AddIconOSDMessage("JITExpired", ICON_FA_TRIANGLE_EXCLAMATION,
+                    "JIT session expired — booting in interpreter mode (much slower). "
+                    "Relaunch the app to re-enable JIT.",
+                    15.0f);
+
+                // Tell the old thread to exit, then fall through to create a new one.
+                s_vmThreadShouldExit.store(true);
+                s_vmCV.notify_one(); // wake the old thread so it can check and exit
+                // Don't return — fall through to the "First call: create the
+                // persistent thread" block. The old thread will exit cleanly via
+                // the s_vmThreadShouldExit check in its wait predicate.
+                std::this_thread::sleep_for(std::chrono::milliseconds(200)); // brief wait for old thread to exit
+            }
+            else
+            {
+                // JIT is alive — normal re-boot path
+                std::fprintf(stderr, "@@BOOT_START_THREAD@@ active=0 created=1 action=signal\n");
+                std::fflush(stderr);
+                Console.WriteLn("[VM] startVMThread: signaling existing VM thread");
+                s_vmCV.notify_one();
+                return;
+            }
         }
 
         // First call: create the persistent thread
@@ -735,7 +776,36 @@ static void ARMSX2StartJITKeepalive()
         std::fflush(stderr);
         ARMSX2ConfigureImGuiFonts("vm-thread");
         Console.WriteLn("[VM] VM Thread: CPUThreadInitialize (once)...");
-        if (!VMManager::Internal::CPUThreadInitialize()) {
+        // VM init watchdog (Component 4a): if CPUThreadInitialize hangs (e.g. a
+        // Universal TXM prepare that never traps), surface an error and return
+        // to the menu instead of hanging on a permanent black screen.
+        s_vmInitComplete.store(false, std::memory_order_relaxed);
+        std::thread watchdog([]() {
+            for (int i = 0; i < 150; i++) // 15 seconds at 100ms intervals
+            {
+                if (s_vmInitComplete.load(std::memory_order_relaxed))
+                    return;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            if (!s_vmInitComplete.load(std::memory_order_relaxed))
+            {
+                std::fprintf(stderr, "@@BOOT_FAIL@@ reason=vm_init_timeout stage=cpu_thread_initialize\n");
+                std::fflush(stderr);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    Host::ReportErrorAsync("JIT Init Timeout",
+                        "JIT memory setup took too long. This is a known issue with the Universal TXM "
+                        "protocol on iOS 26. Try Settings → Emulator → JIT Script → Legacy, or relaunch "
+                        "via StikDebug.");
+                    [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSReturnToMenu" object:nil];
+                });
+                std::lock_guard<std::mutex> lk(s_vmMutex);
+                s_vmThreadCreated = false;
+            }
+        });
+        watchdog.detach();
+        const bool cpuInitOk = VMManager::Internal::CPUThreadInitialize();
+        s_vmInitComplete.store(true, std::memory_order_relaxed);
+        if (!cpuInitOk) {
             std::fprintf(stderr, "@@BOOT_THREAD_INIT@@ ok=0\n");
             std::fflush(stderr);
             Console.Error("VM Thread: CPUThreadInitialize failed.");
@@ -761,7 +831,15 @@ static void ARMSX2StartJITKeepalive()
                     std::fprintf(stderr, "@@BOOT_THREAD_WAIT@@ waiting=1\n");
                     std::fflush(stderr);
                     Console.WriteLn("[VM] VM Thread: waiting for boot request...");
-                    s_vmCV.wait(lk, [] { return s_requestVMBoot.load(); });
+                    s_vmCV.wait(lk, [] { return s_requestVMBoot.load() || s_vmThreadShouldExit.load(); });
+                    if (s_vmThreadShouldExit.load(std::memory_order_relaxed))
+                    {
+                        s_vmThreadShouldExit.store(false, std::memory_order_relaxed);
+                        std::fprintf(stderr, "@@BOOT_THREAD_EXIT@@ reason=should_exit\n");
+                        std::fflush(stderr);
+                        Console.WriteLn("[VM] VM Thread: exit requested, ending persistent loop.");
+                        break; // exit the while(true) loop — thread ends
+                    }
                 }
                 s_requestVMBoot.store(false);
             }
