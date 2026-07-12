@@ -625,6 +625,8 @@ void DarwinMisc::SetCrashLogFD(int fd)
 
 void DarwinMisc::SetJitRange(void* base, size_t size)
 {
+	if (!base || size == 0)
+		return; // interpreter-only mode: no code region
 	s_jit_base = reinterpret_cast<uintptr_t>(base);
 	s_jit_end = s_jit_base + size;
 }
