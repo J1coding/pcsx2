@@ -707,6 +707,10 @@ static void ARMSX2StartJITKeepalive()
 #pragma mark - Persistent VM thread
 - (void)startVMThread {
     ARMSX2ApplyJITScriptProtocol("start-vm-thread");
+    // Set inside the lock below when the JIT-dead re-boot path tears the old
+    // thread down; consumed after the lock is released so the 200ms sleep does
+    // NOT happen while holding s_vmMutex.
+    bool needRebootAfterJITTeardown = false;
     {
         std::lock_guard<std::mutex> lk(s_vmMutex);
         if (s_vmThreadActive.load()) {
@@ -743,12 +747,16 @@ static void ARMSX2StartJITKeepalive()
                     15.0f);
 
                 // Tell the old thread to exit, then fall through to create a new one.
+                // We deliberately do NOT sleep here: std::condition_variable::wait
+                // re-acquires the mutex before evaluating its predicate, so the old
+                // thread cannot observe s_vmThreadShouldExit until this scope ends and
+                // s_vmMutex is released. Sleeping under the lock would serialize the
+                // 200ms and defeat the whole point of the grace period. Record the need
+                // to sleep + respawn and perform it outside the lock below.
                 s_vmThreadShouldExit.store(true);
                 s_vmCV.notify_one(); // wake the old thread so it can check and exit
-                // Don't return — fall through to the "First call: create the
-                // persistent thread" block. The old thread will exit cleanly via
-                // the s_vmThreadShouldExit check in its wait predicate.
-                std::this_thread::sleep_for(std::chrono::milliseconds(200)); // brief wait for old thread to exit
+                needRebootAfterJITTeardown = true;
+                // Fall out of this scope — do NOT return.
             }
             else
             {
@@ -760,8 +768,23 @@ static void ARMSX2StartJITKeepalive()
                 return;
             }
         }
+    }
+    // <-- s_vmMutex is released here.
 
-        // First call: create the persistent thread
+    if (needRebootAfterJITTeardown) {
+        // Now that the lock is released, the old thread can wake, re-acquire
+        // s_vmMutex, observe s_vmThreadShouldExit, clear it, and break out of
+        // its wait loop. Give it a brief grace period to exit before we spawn a
+        // replacement.
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    // Ensure s_vmThreadCreated is set for the thread we're about to create.
+    // First call: flips false->true. Re-boot after JIT teardown: it may already
+    // be true (the old thread does not clear it on exit) -- that's fine; this
+    // just lets the first-call and re-boot paths share the same tail.
+    {
+        std::lock_guard<std::mutex> lk(s_vmMutex);
         s_vmThreadCreated = true;
     }
 
@@ -805,6 +828,14 @@ static void ARMSX2StartJITKeepalive()
         watchdog.detach();
         const bool cpuInitOk = VMManager::Internal::CPUThreadInitialize();
         s_vmInitComplete.store(true, std::memory_order_relaxed);
+        // NOTE (Issue 2, benign race): there is a TOCTOU window here. If the
+        // watchdog fires between CPUThreadInitialize() completing and this point,
+        // it will have already reset s_vmThreadCreated=false (and posted the
+        // "JIT Init Timeout" error + ReturnToMenu notification) even though init
+        // actually succeeded. We do not guard against this: the worst case is a
+        // redundant error dialog the user dismisses, and the persistent thread
+        // simply blocks on its wait predicate. Over-engineering a fix (e.g. a
+        // second handshake) is not worth it. This is intentionally left as-is.
         if (!cpuInitOk) {
             std::fprintf(stderr, "@@BOOT_THREAD_INIT@@ ok=0\n");
             std::fflush(stderr);
