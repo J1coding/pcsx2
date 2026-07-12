@@ -597,6 +597,54 @@
     }
 }
 
+// ---------------------------------------------------------------------------
+// JIT keepalive timer (Component 2: idle-period grant validation)
+// ---------------------------------------------------------------------------
+// Fires every 12 seconds while the VM is idle, re-validating the JIT grant
+// via DarwinMisc::ValidateJITAlive(). iOS can revoke CS_DEBUGGED ~30-60s after
+// the app becomes inactive; this catches the revocation early and posts a
+// notification so the UI can react before the next boot attempt.
+// ---------------------------------------------------------------------------
+static dispatch_source_t s_jitKeepaliveTimer = nil;
+static std::atomic<bool> s_jitExpired{false};
+
+static void ARMSX2StopJITKeepalive()
+{
+    if (s_jitKeepaliveTimer)
+    {
+        dispatch_source_cancel(s_jitKeepaliveTimer);
+        s_jitKeepaliveTimer = nil;
+        NSLog(@"@@JIT_KEEPALIVE@@ timer_stopped");
+    }
+}
+
+static void ARMSX2StartJITKeepalive()
+{
+    if (s_jitKeepaliveTimer) return;
+    dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0);
+    s_jitKeepaliveTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+    dispatch_source_set_timer(s_jitKeepaliveTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, 12 * NSEC_PER_SEC),
+                              12 * NSEC_PER_SEC, 0);
+    dispatch_source_set_event_handler(s_jitKeepaliveTimer, ^{
+        // Skip while VM is running — the recompiler constantly writes code,
+        // so JIT cannot expire during active gameplay.
+        if (s_vmThreadActive.load(std::memory_order_relaxed))
+            return;
+        if (!DarwinMisc::ValidateJITAlive())
+        {
+            s_jitExpired.store(true);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter]
+                    postNotificationName:@"ARMSX2iOSJITExpired" object:nil];
+            });
+            ARMSX2StopJITKeepalive();
+        }
+    });
+    dispatch_resume(s_jitKeepaliveTimer);
+    NSLog(@"@@JIT_KEEPALIVE@@ timer_started interval=12s");
+}
+
 #pragma mark - JIT gate & VM launch
 // JIT availability check for real devices. The allocation path can use MAP_JIT,
 // dual-map, or legacy mprotect depending on what iOS/LiveContainer permits.
@@ -697,6 +745,7 @@
         }
         std::fprintf(stderr, "@@BOOT_THREAD_INIT@@ ok=1\n");
         std::fflush(stderr);
+        ARMSX2StartJITKeepalive(); // JIT acquired — start idle-period validation
 
         // === PERSISTENT BOOT LOOP ===
         bool auto_boot_first = (getenv("ARMSX2_AUTO_BOOT") && atoi(getenv("ARMSX2_AUTO_BOOT")) == 1)
@@ -866,6 +915,8 @@
             ARMSX2ApplyJITScriptProtocol("pre-vm-initialize");
 
             // --- Initialize & Execute VM ---
+            // VM about to run — JIT is in active use, keepalive not needed.
+            ARMSX2StopJITKeepalive();
             Error bootError;
             const VMBootResult bootResult = VMManager::Initialize(boot_params, &bootError);
             const std::string bootErrorText = bootError.GetDescription();
@@ -947,6 +998,7 @@
 
             // --- Post-shutdown: reset state, notify UI ---
             s_vmThreadActive.store(false);
+            ARMSX2StartJITKeepalive(); // VM stopped — JIT idle, restart monitoring
             s_vmHeartbeatGeneration.fetch_add(1, std::memory_order_acq_rel);
             s_requestVMStop.store(false);
             Console.WriteLn("[VM] VM Thread: shutdown complete, posting notification");
